@@ -1,49 +1,27 @@
-import React from "react";
-import { Link } from 'react-router-dom';
+import { Link, NavLink } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
 
-function Navbar() {
-    return (
-        <nav style={navbarStyle}>
-            <ul style={ulStyle}>
-                <li>
-                    <Link to="/" style={linkStyle}>Home</Link>
-                </li>
-                <li>
-                    <Link to="/login" style={linkStyle}>Login</Link>
-                </li>
-                <li>
-                    <Link to="/register" style={linkStyle}>Register</Link>
-                </li>
-                <li>
-                    <Link to="/post" style={linkStyle}>Post item</Link>
-                </li>
-            </ul>
-        </nav>
-    );
+export default function Navbar() {
+  const { isAuthenticated } = useAuth();
+
+  return (
+    <nav className="site-nav" aria-label="Main navigation">
+      <div className="site-nav__inner">
+        <Link to="/" className="brand" aria-label="MUT Market home">
+          <span className="brand__mark">M</span>
+          <span><strong>MUT</strong> Market</span>
+        </Link>
+        <div className="site-nav__links">
+          <NavLink to="/" end className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>Explore</NavLink>
+          <NavLink to="/post-item" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>Sell an item</NavLink>
+        </div>
+        <div className="site-nav__actions">
+          {isAuthenticated ? <Link to="/" className="avatar" aria-label="Open your profile">MS</Link> : <>
+            <Link to="/login" className="nav-link">Log in</Link>
+            <Link to="/register" className="button button--small">Join MUT Market</Link>
+          </>}
+        </div>
+      </div>
+    </nav>
+  );
 }
-
-// These style objects MUST be defined outside the Navbar function,
-// but within the same file, so they are accessible.
-const navbarStyle = {
-    background: '#333', // Corrected 'backgrouund' to 'background'
-    color: '#fff',      // Added color for text within nav itself
-    padding: '10px 0',
-    textAlign: 'center',
-};
-
-const ulStyle = {
-    listStyle: 'none',
-    padding: 0,
-    margin: 0,
-    display: 'flex',
-    justifyContent: 'center',
-    gap: '20px',
-};
-
-const linkStyle = { // This definition was likely missing or misplaced
-    color: '#fff',
-    textDecoration: 'none',
-    fontWeight: 'bold',
-};
-
-export default Navbar;

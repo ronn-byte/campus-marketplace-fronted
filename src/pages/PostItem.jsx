@@ -1,104 +1,54 @@
-import React, { useState } from "react";
-import axios from "axios";
+import { useState } from "react";
+import Button from "../components/Button";
+import apiClient, { getApiErrorMessage } from "../services/apiClient";
 
-function PostItem() {
-    const[title, setTitle] = useState("");
-    const [description, setDescription] = useState("");
-    const [price, setPrice] = useState("");
-    const [image, setImage] = useState(null); // For image upload
+const initialForm = { title: "", description: "", price: "", category: "", condition: "", location: "" };
 
-    const handleSubmit = async (e) => { 
-        e.preventDefault();
+export default function PostItem() {
+  const [form, setForm] = useState(initialForm);
+  const [image, setImage] = useState(null);
+  const [status, setStatus] = useState({ loading: false, message: "", error: "" });
 
-        //create a FormData object to send mixed data (text and file)
-        const formData = new FormData();
-        formData.append("title", title);
-        formData.append("description", description);
-        formData.append("price", price);
-        if (image) {
-            formData.append("image", image); // Append the image file
-        }
+  const updateField = (event) => setForm({ ...form, [event.target.name]: event.target.value });
+  const handleImageChange = (event) => setImage(event.target.files?.[0] || null);
 
-        try {
-            // we're  anticipating an endpoint like /api/items forposting new items
-            const response = await axios.post('http://localhost:5000/api/items', formData, {
-        headers: {
-          'Content-Type': 'multipart/form-data', // Axios handles boundary, just specify type
-          // You might need to add an Authorization header here later for protected routes
-          // 'Authorization': `Bearer ${localStorage.getItem('token')}`
-        },
-      });
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setStatus({ loading: true, message: "", error: "" });
+    const payload = new FormData();
+    Object.entries(form).forEach(([key, value]) => payload.append(key, value));
+    if (image) payload.append("image", image);
 
-            console.log("Item posted successfully:", response.data);
-            // Reset form fields after successful submission
-            setTitle("");
-            setDescription("");
-            setPrice("");
-            setImage(null);
-            // Optionally, you can redirect or show a success message here
-            alert("Item posted successfully!");
-        }
-        catch (error) {
-            console.error("Error posting item:", error);
-            // Handle error appropriately, e.g., show an error message
-            alert("Failed to post item. Please try again.");
-        }
-    };
+    try {
+      await apiClient.post("/listings", payload);
+      setForm(initialForm);
+      setImage(null);
+      event.target.reset();
+      setStatus({ loading: false, message: "Your listing was submitted for review.", error: "" });
+    } catch (error) {
+      setStatus({ loading: false, message: "", error: getApiErrorMessage(error) });
+    }
+  };
 
-    const handleImageChange = (e) => {
-        setImage(e.target.files[0]); // Set the first selected file to state
-    };
-
-    return (
-        <div style={ { padding: "20px", maxWidth: "600px", margin: "auto" }}>
-            <h1>Post an Item</h1>
-            <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: "15px" }}>
-                <input
-                    type="text"
-                    placeholder="Title"
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    required
-                    style={{ padding: "10px", borderRadius: "5px", border: "1px solid #ddd" }}
-                />
-                <textarea
-                    value={description}
-                    onChange={(e) => setDescription(e.target.value)}
-                    placeholder="Description of the item"
-                    rows={"5"}
-                    required
-                    style={{ padding: "10px", borderRadius: "5px", border: "1px solid #ddd", resize: "vertical" }}
-                />
-                <input
-                    type="number"
-                  value={price}
-                    onChange={ (e) => setPrice(e.target.value) }
-                    placeholder="Price"
-                    min={"0"}
-                    step={"0.01"}
-                    required
-                    style={{ padding: "10px", borderRadius: "5px", border: "1px solid #ddd" }}
-                />
-                <label htmlFor="image-upload" style={{ display: "block", marginBotom: "5px", frontWeight: "bold" }}>
-                    Upload Image:
-                </label>
-                <input
-                    id="image-upload" // Added id for label association
-                    type="file"
-                    accept="image/*" // Accept only image files
-                    onChange={handleImageChange} // Use dedicated handler for image change
-                    style={{ padding: "10px", border: "1px solid #ddd", borderRadius: "5px"}}
-                />
-                <button
-                    type="submit"
-                    style={{ padding: "12px 20px", background: "#007bff", color: "white", border: "none", borderRadius: "5px", cursor: "pointer", fontSize: "16px" }}
-                >
-                    Post Item
-                </button>
-            </form>
-        </div>
-    );
+  return (
+    <div className="page-shell sell-layout">
+      <section className="form-card" aria-labelledby="sell-heading">
+        <p className="eyebrow">Sell around campus</p>
+        <h1 id="sell-heading">Give your item a useful next chapter.</h1>
+        <p className="form-card__intro">Clear details help another student decide quickly. Your listing status is controlled by the marketplace server.</p>
+        {status.error && <div className="form-alert" role="alert">{status.error}</div>}
+        {status.message && <div className="preview-note" role="status">{status.message}</div>}
+        <form onSubmit={handleSubmit}>
+          <div className="field"><label htmlFor="title">Item title</label><input id="title" name="title" type="text" value={form.title} onChange={updateField} maxLength="120" placeholder="e.g. Engineering textbook" required /></div>
+          <div className="field"><label htmlFor="description">Description</label><textarea id="description" name="description" value={form.description} onChange={updateField} maxLength="4000" placeholder="What should another student know?" required /></div>
+          <div className="field"><label htmlFor="price">Price in KSh</label><input id="price" name="price" type="number" value={form.price} onChange={updateField} min="0" step="1" required /></div>
+          <div className="field"><label htmlFor="category">Category</label><select id="category" name="category" value={form.category} onChange={updateField} required><option value="">Choose a category</option><option>Books</option><option>Electronics</option><option>Furniture</option><option>Fashion</option><option>Services</option></select></div>
+          <div className="field"><label htmlFor="condition">Condition</label><select id="condition" name="condition" value={form.condition} onChange={updateField} required><option value="">Choose condition</option><option>New</option><option>Like new</option><option>Good</option><option>Fair</option></select></div>
+          <div className="field"><label htmlFor="location">Campus meeting location</label><input id="location" name="location" type="text" value={form.location} onChange={updateField} maxLength="120" placeholder="e.g. Main campus" required /></div>
+          <div className="field"><label htmlFor="image">Listing image</label><input id="image" name="image" type="file" accept="image/jpeg,image/png,image/webp" onChange={handleImageChange} /><span className="muted">Use a clear image. The backend must validate file type and size before publishing.</span></div>
+          <Button type="submit" disabled={status.loading}>{status.loading ? "Submitting listing..." : "Submit listing"}</Button>
+        </form>
+      </section>
+    </div>
+  );
 }
-
-export default PostItem;
-// This code defines a React component for posting an item.

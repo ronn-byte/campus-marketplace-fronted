@@ -1,47 +1,56 @@
-import React, { useState} from "react";
-import axios from "axios";
+import { useState } from "react";
+import { Link, useNavigate } from "react-router-dom";
+import Button from "../components/Button";
+import apiClient, { getApiErrorMessage } from "../services/apiClient";
+import { useAuth } from "../context/AuthContext";
 
-const Login = () => {
-    const [username, setUsername] = useState("");
-    const [password, setPassword] = useState("");
+export default function Login() {
+  const navigate = useNavigate();
+  const { setUser } = useAuth();
+  const [form, setForm] = useState({ identifier: "", password: "" });
+  const [status, setStatus] = useState({ loading: false, error: "" });
 
-    const handleSubmit = (e) => {
-        e.preventDefault();
-        axios.post('http://localhost:5000/api/auth/login', { username, password })
-      .then((res) => {
-        console.log('Login successful:', res.data);
-        // TODO: Store the authentication token (e.g., in localStorage)
-        // TODO: Redirect the user to the home page or dashboard
-      })
+  const updateField = (event) => setForm({ ...form, [event.target.name]: event.target.value });
 
-        .catch((err) => {
-        console.error('Login failed:', err.response ? err.response.data : err.message);
-        //TODO: Show an error message to the user(e.g "invalid credentials")
-        });
-    };
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setStatus({ loading: true, error: "" });
 
-    return (
+    try {
+      await apiClient.post("/auth/login", form);
+      const { data } = await apiClient.get("/auth/session");
+      setUser(data.user || null);
+      navigate("/");
+    } catch (error) {
+      setStatus({ loading: false, error: getApiErrorMessage(error) });
+    }
+  };
+
+  return (
+    <div className="page-shell form-page">
+      <section className="form-intro">
+        <p className="eyebrow">Welcome back</p>
+        <h1>Your campus, a little closer.</h1>
+        <p className="muted">Sign in to keep up with listings, conversations, and the people trading around MUT.</p>
+      </section>
+      <section className="form-card" aria-labelledby="login-heading">
+        <h2 id="login-heading">Log in to MUT Market</h2>
+        <p className="form-card__intro">Use your account details to continue.</p>
+        {status.error && <div className="form-alert" role="alert">{status.error}</div>}
         <form onSubmit={handleSubmit}>
-            <h2>Login to your Account</h2> {/*Added a header for better UX*/}
-            <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            placeholder="Username or Email" // Updated placeholder for clarity
-            required
-            />
-            <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Password"
-            required
-            />
-            <button type="submit">Login</button>    
-            <p>Don't have an account? <a href="/register">Register here</a></p> {/*Added a link to the registration page*/} 
+          <div className="field">
+            <label htmlFor="identifier">Email or username</label>
+            <input id="identifier" name="identifier" type="text" value={form.identifier} onChange={updateField} autoComplete="username" required />
+          </div>
+          <div className="field">
+            <label htmlFor="password">Password</label>
+            <input id="password" name="password" type="password" value={form.password} onChange={updateField} autoComplete="current-password" required />
+          </div>
+          <div className="section-heading"><span /> <Link className="text-link" to="/forgot-password">Forgot password?</Link></div>
+          <Button type="submit" disabled={status.loading}>{status.loading ? "Signing you in..." : "Log in"}</Button>
         </form>
-    );
-};
-
-export default Login;
-// This code defines a simple login form using React.
+        <p className="form-footer">New to MUT Market? <Link className="text-link" to="/register">Create an account</Link></p>
+      </section>
+    </div>
+  );
+}
