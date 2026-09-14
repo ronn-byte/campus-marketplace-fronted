@@ -9,9 +9,13 @@ const apiClient = axios.create({
   },
 });
 
-export const getApiErrorMessage = (error) => {
-  if (error.response?.status === 401) {
+export const getApiErrorMessage = (error, context = "request") => {
+  if (error.response?.status === 401 && context === "session") {
     return "Your session has expired. Please sign in again.";
+  }
+
+  if (error.response?.status === 401 && context === "login") {
+    return "Unable to sign in with those credentials.";
   }
 
   if (error.response?.status === 429) {

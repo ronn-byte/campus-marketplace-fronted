@@ -1,0 +1,1 @@
+Future domain route modules belong here. Keep route handlers thin: validate input, call an application service, and return a safe response DTO. Phase 1 exposes only the health route from `src/app/app.ts`.

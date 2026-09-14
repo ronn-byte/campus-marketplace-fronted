@@ -12,7 +12,7 @@ export default function ForgotPassword() {
     setStatus({ loading: true, message: "", error: "" });
 
     try {
-      await apiClient.post("/auth/password-reset/request", { email });
+      await apiClient.post("/auth/forgot-password", { email });
       setStatus({ loading: false, message: "If an account matches that email, recovery instructions will be sent shortly.", error: "" });
     } catch (error) {
       setStatus({ loading: false, message: "", error: getApiErrorMessage(error) });

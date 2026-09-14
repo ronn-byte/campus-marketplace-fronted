@@ -1,5 +1,5 @@
 # dependencies
-/node_modules
+node_modules/
 
 # testing
 /coverage
@@ -20,3 +20,5 @@ yarn-debug.log*
 yarn-error.log*
 # Vite specific
 .vite/
+# Build output
+**/dist/

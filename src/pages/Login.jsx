@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import Button from "../components/Button";
 import apiClient, { getApiErrorMessage } from "../services/apiClient";
-import { useAuth } from "../context/AuthContext";
+import { useAuth } from "../hooks/useAuth";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -22,7 +22,8 @@ export default function Login() {
       setUser(data.user || null);
       navigate("/");
     } catch (error) {
-      setStatus({ loading: false, error: getApiErrorMessage(error) });
+      const context = error.config?.url?.endsWith("/auth/session") ? "session" : "login";
+      setStatus({ loading: false, error: getApiErrorMessage(error, context) });
     }
   };
 

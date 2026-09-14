@@ -1,0 +1,245 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  STUDENT
+  MODERATOR
+  ADMINISTRATOR
+}
+
+enum AccountStatus {
+  PENDING_VERIFICATION
+  ACTIVE
+  SUSPENDED
+  DISABLED
+}
+
+enum VerificationMethod {
+  UNIVERSITY_EMAIL
+  MANUAL_STUDENT
+}
+
+enum VerificationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum ListingStatus {
+  DRAFT
+  PUBLISHED
+  RESERVED
+  SOLD
+  SUSPENDED
+  REMOVED
+}
+
+enum ListingCondition {
+  NEW
+  LIKE_NEW
+  GOOD
+  FAIR
+  USED
+}
+
+enum ImageProcessingStatus {
+  PENDING
+  PROCESSING
+  READY
+  FAILED
+}
+
+enum ListingInquiryStatus {
+  OPEN
+  RESPONDED
+  CLOSED
+}
+
+model User {
+  id              String        @id @default(uuid()) @db.Uuid
+  email           String        @unique @db.VarChar(320)
+  passwordHash    String        @db.VarChar(255)
+  role            Role          @default(STUDENT)
+  accountStatus   AccountStatus @default(PENDING_VERIFICATION)
+  emailVerifiedAt DateTime?     @db.Timestamptz(3)
+  lastLoginAt     DateTime?     @db.Timestamptz(3)
+  createdAt       DateTime      @default(now()) @db.Timestamptz(3)
+  updatedAt       DateTime      @updatedAt @db.Timestamptz(3)
+
+  sessions               Session[]
+  verificationTokens     EmailVerificationToken[]
+  passwordResetTokens    PasswordResetToken[]
+  studentProfile         StudentProfile?
+  listings               Listing[]
+  inquiries              ListingInquiry[]
+  verificationsSubmitted Verification[]           @relation("VerificationSubject")
+  verificationsReviewed  Verification[]           @relation("VerificationReviewer")
+
+  @@index([accountStatus])
+  @@index([role, accountStatus])
+  @@map("users")
+}
+
+model StudentProfile {
+  id                           String             @id @default(uuid()) @db.Uuid
+  userId                       String             @unique @db.Uuid
+  displayName                  String             @db.VarChar(80)
+  registrationNumberHash       String?            @unique @db.Char(64)
+  registrationNumberCiphertext String?            @db.Text
+  verificationStatus           VerificationStatus @default(PENDING)
+  createdAt                    DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt                    DateTime           @updatedAt @db.Timestamptz(3)
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  verifications Verification[]
+
+  @@index([verificationStatus])
+  @@map("student_profiles")
+}
+
+model Verification {
+  id               String             @id @default(uuid()) @db.Uuid
+  userId           String             @db.Uuid
+  studentProfileId String?            @db.Uuid
+  method           VerificationMethod
+  status           VerificationStatus @default(PENDING)
+  reason           String?            @db.VarChar(1000)
+  reviewedById     String?            @db.Uuid
+  createdAt        DateTime           @default(now()) @db.Timestamptz(3)
+  updatedAt        DateTime           @updatedAt @db.Timestamptz(3)
+  reviewedAt       DateTime?          @db.Timestamptz(3)
+
+  user           User            @relation("VerificationSubject", fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  studentProfile StudentProfile? @relation(fields: [studentProfileId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  reviewedBy     User?           @relation("VerificationReviewer", fields: [reviewedById], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([status, method, createdAt])
+  @@index([userId, status])
+  @@map("verifications")
+}
+
+model Session {
+  id          String    @id @default(uuid()) @db.Uuid
+  userId      String    @db.Uuid
+  sessionHash String    @unique @db.Char(64)
+  expiresAt   DateTime  @db.Timestamptz(3)
+  createdAt   DateTime  @default(now()) @db.Timestamptz(3)
+  lastUsedAt  DateTime? @db.Timestamptz(3)
+  revokedAt   DateTime? @db.Timestamptz(3)
+  ipAddress   String?   @db.Inet
+  userAgent   String?   @db.VarChar(512)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+model EmailVerificationToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  tokenHash  String    @unique @db.Char(64)
+  expiresAt  DateTime  @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  consumedAt DateTime? @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([userId, consumedAt])
+  @@index([expiresAt])
+  @@map("email_verification_tokens")
+}
+
+model PasswordResetToken {
+  id         String    @id @default(uuid()) @db.Uuid
+  userId     String    @db.Uuid
+  tokenHash  String    @unique @db.Char(64)
+  expiresAt  DateTime  @db.Timestamptz(3)
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  consumedAt DateTime? @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([userId, consumedAt])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}
+
+model Category {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String   @db.VarChar(80)
+  slug      String   @unique @db.VarChar(100)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  listings Listing[]
+
+  @@index([isActive])
+  @@map("categories")
+}
+
+model Listing {
+  id          String           @id @default(uuid()) @db.Uuid
+  sellerId    String           @db.Uuid
+  categoryId  String           @db.Uuid
+  title       String           @db.VarChar(120)
+  description String           @db.VarChar(5000)
+  price       Decimal          @db.Decimal(12, 2)
+  condition   ListingCondition
+  location    String           @db.VarChar(120)
+  status      ListingStatus    @default(DRAFT)
+  createdAt   DateTime         @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime         @updatedAt @db.Timestamptz(3)
+  publishedAt DateTime?        @db.Timestamptz(3)
+  soldAt      DateTime?        @db.Timestamptz(3)
+
+  seller    User             @relation(fields: [sellerId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  category  Category         @relation(fields: [categoryId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  images    ListingImage[]
+  inquiries ListingInquiry[]
+
+  @@index([sellerId, status, createdAt])
+  @@index([categoryId, status, createdAt])
+  @@index([status, createdAt])
+  @@map("listings")
+}
+
+model ListingImage {
+  id               String                @id @default(uuid()) @db.Uuid
+  listingId        String                @db.Uuid
+  objectKey        String                @db.VarChar(500)
+  sortOrder        Int                   @default(0)
+  processingStatus ImageProcessingStatus @default(PENDING)
+  createdAt        DateTime              @default(now()) @db.Timestamptz(3)
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@unique([listingId, sortOrder])
+  @@index([listingId, processingStatus])
+  @@map("listing_images")
+}
+
+model ListingInquiry {
+  id        String               @id @default(uuid()) @db.Uuid
+  listingId String               @db.Uuid
+  buyerId   String               @db.Uuid
+  message   String               @db.VarChar(2000)
+  status    ListingInquiryStatus @default(OPEN)
+  createdAt DateTime             @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime             @updatedAt @db.Timestamptz(3)
+
+  listing Listing @relation(fields: [listingId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  buyer   User    @relation(fields: [buyerId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([listingId, status, createdAt])
+  @@index([buyerId, status, createdAt])
+  @@map("listing_inquiries")
+}
