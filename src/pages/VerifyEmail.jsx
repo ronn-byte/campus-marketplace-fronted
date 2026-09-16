@@ -1,7 +1,7 @@
-
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import apiClient from "../services/apiClient";
+
 function VerifyEmail() {
   const [searchParams] = useSearchParams();
 
@@ -19,14 +19,15 @@ function VerifyEmail() {
 
     async function verify() {
       try {
-       await apiClient.post("/auth/verify-email", { token });
+        await apiClient.post("/auth/verify-email", { token });
+
         setStatus("success");
         setMessage("Your email has been verified successfully.");
       } catch (error) {
         setStatus("error");
 
         const backendMessage =
-          error.response?.data?.message ||
+          error.response?.data?.error?.message ||
           "The verification link is invalid or has expired.";
 
         setMessage(backendMessage);
