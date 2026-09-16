@@ -1,3 +1,6 @@
+import fastifyStatic from "@fastify/static";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { registerListingRoutes } from "../modules/listings/listing.routes.js";
 import Fastify, { type FastifyInstance } from "fastify";
 import cors from "@fastify/cors";
@@ -8,11 +11,21 @@ import { AppError, errorPayload, getErrorMessage, isHttpError } from "./errors.j
 import { registerAuthRoutes } from "../modules/auth/auth.routes.js";
 import { registerVerificationRoutes } from "../modules/verification/verification.routes.js";
 
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const frontendDistPath = path.resolve(__dirname, "../../../dist");
+
 export function buildApp(): FastifyInstance {
   const app = Fastify({
     logger: env.NODE_ENV !== "test",
     bodyLimit: 1_048_576,
     requestIdHeader: "x-request-id",
+  });
+
+  app.register(fastifyStatic, {
+    root: frontendDistPath,
+    prefix: "/",
   });
 
   app.register(helmet);
@@ -42,6 +55,19 @@ export function buildApp(): FastifyInstance {
     await registerListingRoutes(api);
     await registerVerificationRoutes(api);
   }, { prefix: "/api/v1" });
+
+  app.setNotFoundHandler(async (request, reply) => {
+    if (request.raw.url?.startsWith("/api/")) {
+      return reply.status(404).send({
+        error: {
+          code: "NOT_FOUND",
+          message: "Route not found.",
+        },
+      });
+    }
+
+    return reply.sendFile("index.html");
+  });
 
   return app;
 }

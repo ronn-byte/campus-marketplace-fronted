@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { PrismaClient, AccountStatus, VerificationMethod } from "@prisma/client";
+import { AccountStatus, VerificationMethod } from "@prisma/client";
+import { prisma } from "../src/lib/prisma.js";
 import { authenticate, register, createSession, getSessionUser, revokeSession, changePassword } from "../src/modules/auth/auth.service.js";
 import { hashToken, createOpaqueToken } from "../src/modules/auth/auth.utils.js";
 import { AppError } from "../src/app/errors.js";
 
-const prisma = new PrismaClient();
 
 async function cleanupTestUser(email: string) {
   await prisma.$transaction([

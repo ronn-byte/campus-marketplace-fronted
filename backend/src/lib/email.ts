@@ -9,7 +9,7 @@ export async function sendVerificationEmail(
 ): Promise<void> {
   const verificationUrl = `${env.APP_URL}/verify-email?token=${encodeURIComponent(token)}`;
 
-  await resend.emails.send({
+  const { data, error } = await resend.emails.send({
     from: env.EMAIL_FROM,
     to: email,
     subject: "Verify your Campus Market account",
@@ -23,6 +23,13 @@ export async function sendVerificationEmail(
       <p>If you did not create this account, you can safely ignore this email.</p>
     `,
   });
+
+  if (error) {
+    console.error("Verification email failed:", error);
+    throw new Error("Verification email could not be sent.");
+  }
+
+  console.log("Verification email sent:", data?.id);
 }
 
 export async function sendPasswordResetEmail(
@@ -31,7 +38,7 @@ export async function sendPasswordResetEmail(
 ): Promise<void> {
   const resetUrl = `${env.APP_URL}/reset-password?token=${encodeURIComponent(token)}`;
 
-  await resend.emails.send({
+  const { data, error } = await resend.emails.send({
     from: env.EMAIL_FROM,
     to: email,
     subject: "Reset your Campus Market password",
@@ -45,4 +52,11 @@ export async function sendPasswordResetEmail(
       <p>If you did not request a password reset, you can safely ignore this email.</p>
     `,
   });
+
+  if (error) {
+    console.error("Password reset email failed:", error);
+    throw new Error("Password reset email could not be sent.");
+  }
+
+  console.log("Password reset email sent:", data?.id);
 }
