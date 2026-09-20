@@ -11,7 +11,7 @@ model User {
   id                     String                   @id @default(uuid()) @db.Uuid
   email                  String                   @unique @db.VarChar(320)
   role                   Role                     @default(STUDENT)
-  accountStatus          AccountStatus            @default(PENDING_VERIFICATION)
+  accountStatus          AccountStatus            @default(ACTIVE)
   createdAt              DateTime                 @default(now()) @db.Timestamptz(3)
   updatedAt              DateTime                 @updatedAt @db.Timestamptz(3)
   passwordHash           String                   @db.VarChar(255)

@@ -33,13 +33,9 @@ const GENERIC_AUTH_ERROR = new AppError(
   "Unable to sign in with those credentials.",
 );
 
-export async function register(input: RegisterInput) {
+  export async function register(input: RegisterInput) {
   const passwordHash = await hashPassword(input.password);
-
-  const rawToken =
-    input.verificationMethod === VerificationMethod.UNIVERSITY_EMAIL
-      ? createOpaqueToken()
-      : null;
+  const rawToken = createOpaqueToken();
 
   try {
     const user = await prisma.$transaction(async (transaction) => {
@@ -47,68 +43,32 @@ export async function register(input: RegisterInput) {
         data: {
           email: input.email,
           passwordHash,
-          accountStatus: AccountStatus.PENDING_VERIFICATION,
+          accountStatus: AccountStatus.ACTIVE,
         },
       });
 
-      const isManual =
-        input.verificationMethod === VerificationMethod.MANUAL_STUDENT;
-
-      if (isManual && !input.registrationNumber) {
-        throw new AppError(
-          422,
-          "REGISTRATION_NUMBER_REQUIRED",
-          "A registration number is required for student verification.",
-        );
-      }
-
-      const profile = await transaction.studentProfile.create({
+      await transaction.studentProfile.create({
         data: {
           userId: created.id,
           displayName: input.displayName,
-
-          ...(isManual && input.registrationNumber
-            ? {
-                registrationNumberHash: registrationNumberHash(
-                  input.registrationNumber,
-                ),
-                registrationNumberCiphertext: encryptRegistrationNumber(
-                  input.registrationNumber,
-                ),
-              }
-            : {}),
-
           verificationStatus: VerificationStatus.PENDING,
         },
       });
 
-      await transaction.verification.create({
+      await transaction.emailVerificationToken.create({
         data: {
           userId: created.id,
-          studentProfileId: profile.id,
-          method: input.verificationMethod,
-          status: VerificationStatus.PENDING,
+          tokenHash: hashToken(rawToken),
+          expiresAt: addHours(env.EMAIL_VERIFICATION_TTL_HOURS),
         },
       });
-
-      if (rawToken) {
-        await transaction.emailVerificationToken.create({
-          data: {
-            userId: created.id,
-            tokenHash: hashToken(rawToken),
-            expiresAt: addHours(env.EMAIL_VERIFICATION_TTL_HOURS),
-          },
-        });
-      }
 
       return created;
     });
 
-    // Send the raw token only after the database transaction succeeds.
-    // The raw token is never stored in the database.
-    if (rawToken) {
-      await sendVerificationEmail(input.email, rawToken);
-    }
+    // Email ownership verification is separate from student verification.
+    // The account remains usable while student verification is pending.
+    await sendVerificationEmail(input.email, rawToken);
 
     return toSafeUser(user);
   } catch (error) {
@@ -116,19 +76,6 @@ export async function register(input: RegisterInput) {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
-      const target = error.meta?.target;
-
-      if (
-        Array.isArray(target) &&
-        target.includes("registrationNumberHash")
-      ) {
-        throw new AppError(
-          409,
-          "REGISTRATION_NUMBER_IN_USE",
-          "That registration number is already associated with a verification request.",
-        );
-      }
-
       throw new AppError(
         409,
         "EMAIL_ALREADY_EXISTS",
