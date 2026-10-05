@@ -48,19 +48,21 @@ model StudentProfile {
 }
 
 model Verification {
-  id               String             @id @default(uuid()) @db.Uuid
-  userId           String             @db.Uuid
-  studentProfileId String?            @db.Uuid
-  method           VerificationMethod
-  status           VerificationStatus @default(PENDING)
-  reason           String?            @db.VarChar(1000)
-  reviewedById     String?            @db.Uuid
-  createdAt        DateTime           @default(now()) @db.Timestamptz(3)
-  updatedAt        DateTime           @updatedAt @db.Timestamptz(3)
-  reviewedAt       DateTime?          @db.Timestamptz(3)
-  reviewedBy       User?              @relation("VerificationReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
-  studentProfile   StudentProfile?    @relation(fields: [studentProfileId], references: [id], onDelete: Restrict)
-  user             User               @relation("VerificationSubject", fields: [userId], references: [id])
+  id                      String                   @id @default(uuid()) @db.Uuid
+  userId                  String                   @db.Uuid
+  studentProfileId        String?                  @db.Uuid
+  method                  VerificationMethod
+  status                  VerificationStatus       @default(PENDING)
+  reason                  String?                  @db.VarChar(1000)
+  universityEmail         String?                  @db.VarChar(320)
+  reviewedById            String?                  @db.Uuid
+  createdAt               DateTime                 @default(now()) @db.Timestamptz(3)
+  updatedAt               DateTime                 @updatedAt @db.Timestamptz(3)
+  reviewedAt              DateTime?                @db.Timestamptz(3)
+  reviewedBy              User?                    @relation("VerificationReviewer", fields: [reviewedById], references: [id], onDelete: Restrict)
+  studentProfile          StudentProfile?          @relation(fields: [studentProfileId], references: [id], onDelete: Restrict)
+  user                    User                     @relation("VerificationSubject", fields: [userId], references: [id])
+  emailVerificationTokens EmailVerificationToken[]
 
   @@index([status, method, createdAt])
   @@index([userId, status])
@@ -85,13 +87,16 @@ model Session {
 }
 
 model EmailVerificationToken {
-  id         String    @id @default(uuid()) @db.Uuid
-  userId     String    @db.Uuid
-  tokenHash  String    @unique @db.Char(64)
-  expiresAt  DateTime  @db.Timestamptz(3)
-  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
-  consumedAt DateTime? @db.Timestamptz(3)
-  user       User      @relation(fields: [userId], references: [id])
+  id             String                   @id @default(uuid()) @db.Uuid
+  userId         String                   @db.Uuid
+  purpose        EmailVerificationPurpose @default(ACCOUNT_EMAIL)
+  verificationId String?                  @unique @db.Uuid
+  tokenHash      String                   @unique @db.Char(64)
+  expiresAt      DateTime                 @db.Timestamptz(3)
+  createdAt      DateTime                 @default(now()) @db.Timestamptz(3)
+  consumedAt     DateTime?                @db.Timestamptz(3)
+  user           User                     @relation(fields: [userId], references: [id])
+  verification   Verification?            @relation(fields: [verificationId], references: [id], onDelete: Cascade)
 
   @@index([userId, consumedAt])
   @@index([expiresAt])
@@ -196,6 +201,11 @@ enum AccountStatus {
 enum VerificationMethod {
   UNIVERSITY_EMAIL
   MANUAL_STUDENT
+}
+
+enum EmailVerificationPurpose {
+  ACCOUNT_EMAIL
+  UNIVERSITY_EMAIL
 }
 
 enum VerificationStatus {

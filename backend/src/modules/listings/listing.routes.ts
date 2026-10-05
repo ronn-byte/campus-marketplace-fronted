@@ -3,14 +3,19 @@ import { AppError } from "../../app/errors.js";
 import { requireAuth } from "../../middleware/auth.js";
 import {
   createListingSchema,
+  listingParamsSchema,
   listListingsQuerySchema,
   publishListingParamsSchema,
+  updateListingSchema,
 } from "./listing.schemas.js";
 
 import {
   createListing,
+  getPublicListing,
   getPublishedListings,
   publishListing,
+  removeListing,
+  updateListing,
 } from "./listing.service.js";
 
 export async function registerListingRoutes(app: FastifyInstance) {
@@ -27,43 +32,117 @@ export async function registerListingRoutes(app: FastifyInstance) {
 
     const listings = await getPublishedListings(result.data);
 
-    return reply.status(200).send(listings);
+    return reply.status(200).send({
+      items: listings.listings,
+      listings: listings.listings,
+      meta: listings.meta,
+    });
   });
 
-  app.post(
-  "/listings/:listingId/publish",
-  { preHandler: requireAuth },
-  async (request, reply) => {
-    const result = publishListingParamsSchema.safeParse(request.params);
+  app.get("/listings/:listingId", async (request, reply) => {
+    const result = listingParamsSchema.safeParse(request.params);
 
     if (!result.success) {
-      throw new AppError(
-        422,
-        "VALIDATION_ERROR",
-        "The listing ID is invalid.",
-      );
+      throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
     }
 
-    const user = request.user;
+    const listing = await getPublicListing(result.data.listingId);
+    return reply.status(200).send({ listing });
+  });
 
-    if (!user) {
-      throw new AppError(
-        401,
-        "UNAUTHENTICATED",
-        "Authentication is required.",
+  app.patch(
+    "/listings/:listingId",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+      }
+
+      const result = updateListingSchema.safeParse(request.body);
+      if (!result.success) {
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "Please check the submitted fields.",
+        );
+      }
+
+      const user = request.user;
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const listing = await updateListing(
+        params.data.listingId,
+        user.id,
+        result.data,
       );
-    }
+      return reply.status(200).send({ listing });
+    },
+  );
 
-    const listing = await publishListing({
-      listingId: result.data.listingId,
-      sellerId: user.id,
-    });
+  app.delete(
+    "/listings/:listingId",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+      }
 
-    return reply.status(200).send({
-      listing,
-    });
-  },
-);
+      const user = request.user;
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const listing = await removeListing(params.data.listingId, user.id);
+      return reply.status(200).send({ listing });
+    },
+  );
+
+  app.post(
+    "/listings/:listingId/publish",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const result = publishListingParamsSchema.safeParse(request.params);
+
+      if (!result.success) {
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing ID is invalid.",
+        );
+      }
+
+      const user = request.user;
+
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const listing = await publishListing({
+        listingId: result.data.listingId,
+        sellerId: user.id,
+      });
+
+      return reply.status(200).send({
+        listing,
+      });
+    },
+  );
 
   app.post(
     "/listings",

@@ -1,10 +1,10 @@
-import { AccountStatus, Prisma, Role, VerificationMethod, VerificationStatus } from "@prisma/client";
+import { AccountStatus, EmailVerificationPurpose, Prisma, Role, VerificationMethod, VerificationStatus } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 import { prisma } from "../../lib/prisma.js";
 import { createOpaqueToken, hashToken } from "../auth/auth.utils.js";
 import { addHours } from "../auth/auth.utils.js";
 import { env } from "../../config/env.js";
-import { sendVerificationEmail } from "../../lib/email.js";
+import { sendUniversityVerificationEmail } from "../../lib/email.js";
 import { decryptRegistrationNumber, encryptRegistrationNumber, expectedMutStudentEmail, isExpectedMutStudentEmail, normalizeRegistrationNumber, registrationNumberHash } from "./verification.utils.js";
 
 type ReviewStatus = Extract<VerificationStatus, "APPROVED" | "REJECTED">;
@@ -21,15 +21,10 @@ export async function getUserVerificationState(userId: string) {
     where: { userId },
     select: {
       verificationStatus: true,
-      displayName: true,
-      registrationNumberCiphertext: true,
-      createdAt: true,
-      updatedAt: true,
       user: {
         select: {
-          id: true,
-          accountStatus: true,
           role: true,
+          accountStatus: true,
         },
       },
     },
@@ -39,31 +34,23 @@ export async function getUserVerificationState(userId: string) {
     where: { userId },
     orderBy: { createdAt: "desc" },
     select: {
-      id: true,
       method: true,
-      status: true,
-      reason: true,
-      createdAt: true,
-      reviewedAt: true,
     },
   });
 
   const status = studentProfile?.verificationStatus ?? VerificationStatus.PENDING;
   const maySell = Boolean(
     studentProfile &&
+    studentProfile.user.role === Role.STUDENT &&
     studentProfile.user.accountStatus === AccountStatus.ACTIVE &&
     status === VerificationStatus.APPROVED,
   );
 
   return {
-    userId,
-    verified: status === VerificationStatus.APPROVED,
+    verified: Boolean(studentProfile && status === VerificationStatus.APPROVED),
     status,
     method: mostRecentVerification?.method ?? null,
     maySell,
-    displayName: studentProfile?.displayName ?? null,
-    createdAt: studentProfile?.createdAt ?? null,
-    updatedAt: studentProfile?.updatedAt ?? null,
   };
 }
 
@@ -73,12 +60,16 @@ export async function assertSellerAuthorized(userId: string): Promise<void> {
     select: {
       verificationStatus: true,
       user: {
-        select: { accountStatus: true },
+        select: { role: true, accountStatus: true },
       },
     },
   });
 
-  if (!profile || profile.user.accountStatus !== AccountStatus.ACTIVE) {
+  if (
+    !profile ||
+    profile.user.role !== Role.STUDENT ||
+    profile.user.accountStatus !== AccountStatus.ACTIVE
+  ) {
     throw new AppError(403, "SELLER_VERIFICATION_REQUIRED", "Student verification is required before you can sell.");
   }
 
@@ -90,7 +81,14 @@ export async function assertSellerAuthorized(userId: string): Promise<void> {
 export async function listPendingManualVerifications() {
   const records = await prisma.verification.findMany({
     where: { method: VerificationMethod.MANUAL_STUDENT, status: VerificationStatus.PENDING },
-    include: { user: { select: { id: true, email: true, accountStatus: true, createdAt: true } }, studentProfile: true },
+    select: {
+      id: true,
+      method: true,
+      status: true,
+      createdAt: true,
+      user: { select: { id: true, email: true, accountStatus: true, createdAt: true } },
+      studentProfile: { select: { displayName: true, registrationNumberCiphertext: true } },
+    },
     orderBy: { createdAt: "asc" },
   });
   return records.map((record) => ({
@@ -134,12 +132,11 @@ export async function reviewManualVerification(verificationId: string, reviewerI
 }
 
 export async function submitVerification(userId: string, input: VerificationSubmissionInput) {
-  const registrationNumber = input.registrationNumber.trim();
+  const registrationNumber = normalizeRegistrationNumber(input.registrationNumber);
   if (!registrationNumber || registrationNumber.length < 4) {
     throw new AppError(422, "VALIDATION_ERROR", "A valid registration number is required.");
   }
 
-  const studentProfile = await prisma.studentProfile.findUnique({ where: { userId } });
   const normalizedRegistrationNumber = normalizeRegistrationNumber(registrationNumber);
 
   if (input.method === VerificationMethod.UNIVERSITY_EMAIL) {
@@ -150,26 +147,45 @@ export async function submitVerification(userId: string, input: VerificationSubm
       throw new AppError(422, "INVALID_STUDENT_EMAIL", "The registration number does not match the expected MUT student email.");
     }
 
-    const record = await prisma.verification.create({
-      data: {
+    const profile = await prisma.studentProfile.upsert({
+      where: { userId },
+      update: {
+        ...(input.displayName ? { displayName: input.displayName } : {}),
+        verificationStatus: VerificationStatus.PENDING,
+        registrationNumberHash: registrationNumberHash(normalizedRegistrationNumber),
+        registrationNumberCiphertext: encryptRegistrationNumber(normalizedRegistrationNumber),
+      },
+      create: {
         userId,
-        studentProfileId: studentProfile?.id ?? null,
-        method: VerificationMethod.UNIVERSITY_EMAIL,
-        status: VerificationStatus.PENDING,
-        reason: "Awaiting university email verification.",
+        displayName: input.displayName ?? "Student",
+        verificationStatus: VerificationStatus.PENDING,
+        registrationNumberHash: registrationNumberHash(normalizedRegistrationNumber),
+        registrationNumberCiphertext: encryptRegistrationNumber(normalizedRegistrationNumber),
       },
     });
 
+    const record = await prisma.verification.create({
+      data: {
+        userId,
+        studentProfileId: profile.id,
+        method: VerificationMethod.UNIVERSITY_EMAIL,
+        status: VerificationStatus.PENDING,
+        reason: "Awaiting university email verification.",
+        universityEmail: expectedEmail,
+      },
+    });
     const rawToken = createOpaqueToken();
     await prisma.emailVerificationToken.create({
       data: {
         userId,
+        purpose: EmailVerificationPurpose.UNIVERSITY_EMAIL,
+        verificationId: record.id,
         tokenHash: hashToken(rawToken),
-        expiresAt: new Date(Date.now() + env.EMAIL_VERIFICATION_TTL_HOURS * 60 * 60 * 1000),
+        expiresAt: addHours(env.EMAIL_VERIFICATION_TTL_HOURS),
       },
     });
 
-    await sendVerificationEmail(expectedEmail, rawToken);
+    await sendUniversityVerificationEmail(expectedEmail, rawToken);
 
     return {
       id: record.id,
@@ -180,8 +196,15 @@ export async function submitVerification(userId: string, input: VerificationSubm
   }
 
   if (input.method === VerificationMethod.MANUAL_STUDENT) {
-    const profile = studentProfile ?? await prisma.studentProfile.create({
-      data: {
+    const profile = await prisma.studentProfile.upsert({
+      where: { userId },
+      update: {
+        ...(input.displayName ? { displayName: input.displayName } : {}),
+        verificationStatus: VerificationStatus.PENDING,
+        registrationNumberHash: registrationNumberHash(registrationNumber),
+        registrationNumberCiphertext: encryptRegistrationNumber(registrationNumber),
+      },
+      create: {
         userId,
         displayName: input.displayName ?? "Student",
         verificationStatus: VerificationStatus.PENDING,
@@ -200,23 +223,6 @@ export async function submitVerification(userId: string, input: VerificationSubm
       },
     });
 
-    await prisma.studentProfile.upsert({
-      where: { userId },
-      update: {
-        displayName: input.displayName ?? profile.displayName,
-        verificationStatus: VerificationStatus.PENDING,
-        registrationNumberHash: registrationNumberHash(registrationNumber),
-        registrationNumberCiphertext: encryptRegistrationNumber(registrationNumber),
-      },
-      create: {
-        userId,
-        displayName: input.displayName ?? "Student",
-        verificationStatus: VerificationStatus.PENDING,
-        registrationNumberHash: registrationNumberHash(registrationNumber),
-        registrationNumberCiphertext: encryptRegistrationNumber(registrationNumber),
-      },
-    });
-
     return {
       id: record.id,
       method: VerificationMethod.MANUAL_STUDENT,
@@ -231,32 +237,71 @@ export async function submitVerification(userId: string, input: VerificationSubm
 export async function verifyUniversityEmailToken(token: string): Promise<void> {
   const record = await prisma.emailVerificationToken.findUnique({
     where: { tokenHash: hashToken(token) },
+    include: {
+      verification: {
+        include: {
+          studentProfile: { select: { registrationNumberCiphertext: true } },
+        },
+      },
+    },
   });
 
-  if (!record || record.consumedAt || record.expiresAt <= new Date()) {
+  const verification = record?.verification;
+  const registrationNumber = verification?.studentProfile?.registrationNumberCiphertext
+    ? decryptRegistrationNumber(verification.studentProfile.registrationNumberCiphertext)
+    : null;
+
+  if (
+    !record ||
+    record.purpose !== EmailVerificationPurpose.UNIVERSITY_EMAIL ||
+    !record.verificationId ||
+    record.consumedAt ||
+    record.expiresAt <= new Date() ||
+    !verification ||
+    verification.userId !== record.userId ||
+    verification.method !== VerificationMethod.UNIVERSITY_EMAIL ||
+    verification.status !== VerificationStatus.PENDING ||
+    !registrationNumber ||
+    !verification.universityEmail ||
+    !isExpectedMutStudentEmail(registrationNumber, verification.universityEmail)
+  ) {
     throw new AppError(400, "INVALID_VERIFICATION_TOKEN", "The university email verification link is invalid or expired.");
   }
 
-  await prisma.$transaction([
-    prisma.emailVerificationToken.update({
-      where: { id: record.id },
-      data: { consumedAt: new Date() },
-    }),
-    prisma.verification.updateMany({
+  await prisma.$transaction(async (transaction) => {
+    const consumed = await transaction.emailVerificationToken.updateMany({
       where: {
+        id: record.id,
+        purpose: EmailVerificationPurpose.UNIVERSITY_EMAIL,
+        consumedAt: null,
+      },
+      data: { consumedAt: new Date() },
+    });
+    if (consumed.count !== 1) {
+      throw new AppError(400, "INVALID_VERIFICATION_TOKEN", "The university email verification link is invalid or expired.");
+    }
+
+    const approved = await transaction.verification.updateMany({
+      where: {
+        id: verification.id,
         userId: record.userId,
         method: VerificationMethod.UNIVERSITY_EMAIL,
         status: VerificationStatus.PENDING,
+        universityEmail: verification.universityEmail,
       },
       data: {
         status: VerificationStatus.APPROVED,
         reviewedAt: new Date(),
         reason: "University email verified.",
       },
-    }),
-    prisma.studentProfile.update({
+    });
+    if (approved.count !== 1) {
+      throw new AppError(400, "INVALID_VERIFICATION_TOKEN", "The university email verification link is invalid or expired.");
+    }
+
+    await transaction.studentProfile.update({
       where: { userId: record.userId },
       data: { verificationStatus: VerificationStatus.APPROVED },
-    }),
-  ]);
+    });
+  });
 }

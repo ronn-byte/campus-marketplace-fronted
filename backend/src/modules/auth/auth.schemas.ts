@@ -14,7 +14,7 @@ const registrationNumber = z
   .trim()
   .min(4)
   .max(40)
-  .regex(/^[A-Za-z0-9/\-]+$/)
+  .regex(/^[A-Za-z0-9/\s\\-]+$/)
   .optional();
 
 export const registerSchema = z
@@ -27,13 +27,13 @@ export const registerSchema = z
   })
   .strict()
   .refine((value) => {
-    if (value.verificationMethod !== "MANUAL_STUDENT") {
+    if (!value.verificationMethod) {
       return true;
     }
 
     return Boolean(value.registrationNumber && value.registrationNumber.length >= 4);
   }, {
-    message: "Registration number is required for manual student verification.",
+    message: "Registration number is required for student verification.",
     path: ["registrationNumber"],
   });
 

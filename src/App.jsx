@@ -25,6 +25,7 @@ function App() {
 	    <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/listing/:id" element={<ListingDetails />} />
 	    <Route path="/verify-email" element={<VerifyEmail />} />
+            <Route path="/verify-university-email" element={<VerifyEmail />} />
           </Routes>
         </main>
       </AuthProvider>

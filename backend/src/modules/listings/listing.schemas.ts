@@ -17,3 +17,12 @@ export const listListingsQuerySchema = z.object({
 export const publishListingParamsSchema = z.object({
   listingId: z.string().uuid(),
 }).strict();
+
+export const listingParamsSchema = z.object({
+  listingId: z.string().uuid(),
+}).strict();
+
+export const updateListingSchema = createListingSchema
+  .partial()
+  .strict()
+  .refine((input) => Object.keys(input).length > 0);

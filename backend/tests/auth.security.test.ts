@@ -47,6 +47,9 @@ const {
   getSessionUser,
   revokeSession,
   changePassword,
+  requestPasswordReset,
+  resetPassword,
+  verifyEmail,
 } = await import("../src/modules/auth/auth.service.js");
 const { hashToken, createOpaqueToken } = await import("../src/modules/auth/auth.utils.js");
 const { AppError } = await import("../src/app/errors.js");
@@ -345,6 +348,106 @@ test("Password change: invalidates all sessions", async () => {
   await cleanupTestUser(email);
 });
 
+test("Security: disabled or suspended accounts cannot receive or use token-based auth actions", async (t) => {
+  await t.test("disabled accounts do not receive password-reset emails", async () => {
+    const email = "test-password-reset-disabled@example.com";
+    await cleanupTestUser(email);
+
+    const user = await register({
+      email,
+      password: "test-password-12345",
+      displayName: "Test User",
+      verificationMethod: VerificationMethod.MANUAL_STUDENT,
+      registrationNumber: "ABC123DEF463",
+    });
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { accountStatus: AccountStatus.DISABLED },
+    });
+
+    await requestPasswordReset(email);
+    const tokens = await prisma.passwordResetToken.findMany({ where: { userId: user.id } });
+    assert.equal(tokens.length, 0);
+
+    await cleanupTestUser(email);
+  });
+
+  await t.test("disabled accounts cannot redeem password-reset tokens", async () => {
+    const email = "test-reset-disabled-account@example.com";
+    await cleanupTestUser(email);
+
+    const user = await register({
+      email,
+      password: "test-password-12345",
+      displayName: "Test User",
+      verificationMethod: VerificationMethod.MANUAL_STUDENT,
+      registrationNumber: "ABC123DEF464",
+    });
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { accountStatus: AccountStatus.DISABLED },
+    });
+
+    const token = createOpaqueToken();
+    await prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: hashToken(token),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    await assert.rejects(() => resetPassword({ token, password: "new-password-1234567" }), (error) => {
+      if (error instanceof AppError) {
+        assert.equal(error.code, "INVALID_RESET_TOKEN");
+        return true;
+      }
+      return false;
+    });
+
+    await cleanupTestUser(email);
+  });
+
+  await t.test("disabled accounts cannot verify email tokens", async () => {
+    const email = "test-email-verify-disabled@example.com";
+    await cleanupTestUser(email);
+
+    const user = await register({
+      email,
+      password: "test-password-12345",
+      displayName: "Test User",
+      verificationMethod: VerificationMethod.MANUAL_STUDENT,
+      registrationNumber: "ABC123DEF465",
+    });
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { accountStatus: AccountStatus.DISABLED },
+    });
+
+    const token = createOpaqueToken();
+    await prisma.emailVerificationToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: hashToken(token),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    await assert.rejects(() => verifyEmail(token), (error) => {
+      if (error instanceof AppError) {
+        assert.equal(error.code, "INVALID_VERIFICATION_TOKEN");
+        return true;
+      }
+      return false;
+    });
+
+    await cleanupTestUser(email);
+  });
+});
+
 test("DTO: toSafeUser does not expose sensitive fields", async () => {
   const email = "test-safe-user@example.com";
   await cleanupTestUser(email);
@@ -354,7 +457,7 @@ test("DTO: toSafeUser does not expose sensitive fields", async () => {
     password: "test-password-12345",
     displayName: "Test User",
     verificationMethod: VerificationMethod.MANUAL_STUDENT,
-    registrationNumber: "ABC123DEF463",
+    registrationNumber: "ABC123DEF466",
   });
 
   // Verify returned user object doesn't include passwordHash

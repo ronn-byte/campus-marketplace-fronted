@@ -1,6 +1,7 @@
-import { sendPasswordResetEmail, sendVerificationEmail } from "../../lib/email.js";
+import { sendPasswordResetEmail, sendUniversityVerificationEmail, sendVerificationEmail } from "../../lib/email.js";
 import {
   AccountStatus,
+  EmailVerificationPurpose,
   Prisma,
   VerificationMethod,
   VerificationStatus,
@@ -24,6 +25,7 @@ import type {
 } from "./auth.schemas.js";
 import {
   encryptRegistrationNumber,
+  expectedMutStudentEmail,
   registrationNumberHash,
 } from "../verification/verification.utils.js";
 
@@ -43,6 +45,7 @@ export async function register(input: RegisterInput) {
   const isUniversityEmailVerification =
     input.verificationMethod === VerificationMethod.UNIVERSITY_EMAIL &&
     Boolean(registrationNumber);
+  let universityVerificationId: string | undefined;
 
   try {
     const user = await prisma.$transaction(async (transaction) => {
@@ -86,14 +89,16 @@ export async function register(input: RegisterInput) {
           },
         });
 
-        await transaction.verification.create({
+        const verification = await transaction.verification.create({
           data: {
             userId: created.id,
             studentProfileId: studentProfile.id,
             method: VerificationMethod.UNIVERSITY_EMAIL,
             status: VerificationStatus.PENDING,
+            universityEmail: expectedMutStudentEmail(registrationNumber),
           },
         });
+        universityVerificationId = verification.id;
       } else {
         studentProfile = await transaction.studentProfile.create({
           data: {
@@ -114,6 +119,20 @@ export async function register(input: RegisterInput) {
 
       return created;
     });
+
+    if (isUniversityEmailVerification && registrationNumber && universityVerificationId) {
+      const universityToken = createOpaqueToken();
+      await prisma.emailVerificationToken.create({
+        data: {
+          userId: user.id,
+          purpose: EmailVerificationPurpose.UNIVERSITY_EMAIL,
+          verificationId: universityVerificationId,
+          tokenHash: hashToken(universityToken),
+          expiresAt: addHours(env.EMAIL_VERIFICATION_TTL_HOURS),
+        },
+      });
+      await sendUniversityVerificationEmail(expectedMutStudentEmail(registrationNumber), universityToken);
+    }
 
     // Email ownership verification is separate from student verification.
     // Accounts remain usable while student verification is pending.
@@ -253,10 +272,15 @@ export async function verifyEmail(
     where: {
       tokenHash: hashToken(token),
     },
+    include: { user: true },
   });
 
   if (
     !record ||
+    !record.user ||
+    (record.user.accountStatus === AccountStatus.DISABLED ||
+      record.user.accountStatus === AccountStatus.SUSPENDED) ||
+    record.purpose !== EmailVerificationPurpose.ACCOUNT_EMAIL ||
     record.consumedAt ||
     record.expiresAt <= new Date()
   ) {
@@ -324,7 +348,7 @@ export async function requestPasswordReset(
     where: { email },
   });
 
-  if (!user) {
+  if (!user || user.accountStatus === AccountStatus.DISABLED || user.accountStatus === AccountStatus.SUSPENDED) {
     return;
   }
 
@@ -340,7 +364,7 @@ export async function requestPasswordReset(
     },
   });
 
-    await sendPasswordResetEmail(email, rawToken);
+  await sendPasswordResetEmail(email, rawToken);
 }
 
 export async function resetPassword(
@@ -350,10 +374,14 @@ export async function resetPassword(
     where: {
       tokenHash: hashToken(input.token),
     },
+    include: { user: true },
   });
 
   if (
     !record ||
+    !record.user ||
+    (record.user.accountStatus === AccountStatus.DISABLED ||
+      record.user.accountStatus === AccountStatus.SUSPENDED) ||
     record.consumedAt ||
     record.expiresAt <= new Date()
   ) {
@@ -404,6 +432,7 @@ export async function changePassword(
 
   if (
     !user ||
+    user.accountStatus !== AccountStatus.ACTIVE ||
     !(await verifyPassword(
       user.passwordHash,
       currentPassword,

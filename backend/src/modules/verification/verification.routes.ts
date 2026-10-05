@@ -3,8 +3,9 @@ import { z } from "zod";
 import { Role } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 import { requireAuth, requireRole } from "../../middleware/auth.js";
-import { submitVerificationSchema, verificationIdParams, verificationReviewSchema } from "./verification.schemas.js";
-import { getUserVerificationState, listPendingManualVerifications, reviewManualVerification, submitVerification } from "./verification.service.js";
+import { enforceAuthRateLimit } from "../auth/rateLimiter.js";
+import { submitVerificationSchema, universityEmailTokenSchema, verificationIdParams, verificationReviewSchema } from "./verification.schemas.js";
+import { getUserVerificationState, listPendingManualVerifications, reviewManualVerification, submitVerification, verifyUniversityEmailToken } from "./verification.service.js";
 
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const result = schema.safeParse(value);
@@ -28,6 +29,13 @@ export async function registerVerificationRoutes(app: FastifyInstance): Promise<
       displayName: input.displayName ?? undefined,
       email: input.email ?? undefined,
     });
+  });
+
+  app.post("/verification/verify-email", async (request, reply) => {
+    enforceAuthRateLimit(`university-verify:${request.ip}`);
+    const { token } = parse(universityEmailTokenSchema, request.body);
+    await verifyUniversityEmailToken(token);
+    return reply.status(204).send();
   });
 
   app.get("/moderation/verifications", { preHandler: [requireAuth, reviewers] }, async () => ({ verifications: await listPendingManualVerifications() }));

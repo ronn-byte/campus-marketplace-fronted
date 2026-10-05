@@ -32,6 +32,34 @@ export async function sendVerificationEmail(
   console.log("Verification email sent:", data?.id);
 }
 
+export async function sendUniversityVerificationEmail(
+  email: string,
+  token: string,
+): Promise<void> {
+  const verificationUrl = `${env.APP_URL}/verify-university-email?token=${encodeURIComponent(token)}`;
+
+  const { data, error } = await resend.emails.send({
+    from: env.EMAIL_FROM,
+    to: email,
+    subject: "Verify your MUT student email",
+    html: `
+      <h2>Verify your MUT student email</h2>
+      <p>Confirm control of your university email address to complete student verification:</p>
+      <p>
+        <a href="${verificationUrl}">Verify my university email</a>
+      </p>
+      <p>This link will expire in ${env.EMAIL_VERIFICATION_TTL_HOURS} hours.</p>
+    `,
+  });
+
+  if (error) {
+    console.error("University verification email failed:", error);
+    throw new Error("University verification email could not be sent.");
+  }
+
+  console.log("University verification email sent:", data?.id);
+}
+
 export async function sendPasswordResetEmail(
   email: string,
   token: string,

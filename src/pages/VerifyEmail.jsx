@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useSearchParams } from "react-router-dom";
 import apiClient from "../services/apiClient";
 
 function VerifyEmail() {
+  const location = useLocation();
   const [searchParams] = useSearchParams();
+  const isUniversityVerification = location.pathname === "/verify-university-email";
 
   const [status, setStatus] = useState("verifying");
   const [message, setMessage] = useState("");
@@ -19,10 +21,15 @@ function VerifyEmail() {
 
     async function verify() {
       try {
-        await apiClient.post("/auth/verify-email", { token });
+        const endpoint = isUniversityVerification
+          ? "/verification/verify-email"
+          : "/auth/verify-email";
+        await apiClient.post(endpoint, { token });
 
         setStatus("success");
-        setMessage("Your email has been verified successfully.");
+        setMessage(isUniversityVerification
+          ? "Your MUT student email is verified. Student verification is approved."
+          : "Your email has been verified successfully.");
       } catch (error) {
         setStatus("error");
 
@@ -35,7 +42,7 @@ function VerifyEmail() {
     }
 
     verify();
-  }, [searchParams]);
+  }, [isUniversityVerification, searchParams]);
 
   return (
     <main style={styles.container}>

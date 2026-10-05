@@ -1,10 +1,13 @@
 import { z } from "zod";
 
 export const verificationIdParams = z.object({ id: z.string().uuid() }).strict();
+export const universityEmailTokenSchema = z.object({
+  token: z.string().min(32).max(256),
+}).strict();
 
 export const submitVerificationSchema = z.object({
   method: z.enum(["UNIVERSITY_EMAIL", "MANUAL_STUDENT"]),
-  registrationNumber: z.string().trim().min(4).max(40).regex(/^[A-Za-z0-9/\-]+$/),
+  registrationNumber: z.string().trim().min(4).max(40).regex(/^[A-Za-z0-9/\s\\-]+$/),
   displayName: z.string().trim().min(1).max(80).optional(),
   email: z.string().trim().email().max(320).optional(),
 }).strict().refine((value) => {

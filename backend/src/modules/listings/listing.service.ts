@@ -213,3 +213,225 @@ export async function getPublishedListings(
     },
   };
 }
+
+export async function getPublicListing(listingId: string) {
+  const listing = await prisma.listing.findFirst({
+    where: {
+      id: listingId,
+      status: ListingStatus.PUBLISHED,
+    },
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      price: true,
+      condition: true,
+      location: true,
+      status: true,
+      createdAt: true,
+      publishedAt: true,
+      category: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+        },
+      },
+      images: {
+        where: {
+          processingStatus: "READY",
+        },
+        orderBy: {
+          sortOrder: "asc",
+        },
+        select: {
+          id: true,
+          objectKey: true,
+          sortOrder: true,
+        },
+      },
+      seller: {
+        select: {
+          studentProfile: {
+            select: {
+              displayName: true,
+              verificationStatus: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  if (!listing) {
+    throw new AppError(
+      404,
+      "LISTING_NOT_FOUND",
+      "Listing not found or is no longer available.",
+    );
+  }
+
+  return {
+    id: listing.id,
+    title: listing.title,
+    description: listing.description,
+    price: listing.price,
+    condition: listing.condition,
+    location: listing.location,
+    status: listing.status,
+    createdAt: listing.createdAt,
+    publishedAt: listing.publishedAt,
+    category: listing.category,
+    images: listing.images,
+    seller: {
+      name: listing.seller.studentProfile?.displayName ?? "MUT student",
+      verified:
+        listing.seller.studentProfile?.verificationStatus === "APPROVED",
+    },
+  };
+}
+
+type UpdateListingInput = {
+  [Key in keyof CreateListingInput]?: CreateListingInput[Key] | undefined;
+};
+
+export async function updateListing(
+  listingId: string,
+  sellerId: string,
+  input: UpdateListingInput,
+) {
+  await assertSellerAuthorized(sellerId);
+
+  const existing = await prisma.listing.findUnique({
+    where: { id: listingId },
+    select: {
+      id: true,
+      sellerId: true,
+      status: true,
+    },
+  });
+
+  if (!existing) {
+    throw new AppError(404, "LISTING_NOT_FOUND", "Listing not found.");
+  }
+
+  if (existing.sellerId !== sellerId) {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "You do not have permission to update this listing.",
+    );
+  }
+
+  if (
+    existing.status !== ListingStatus.DRAFT &&
+    existing.status !== ListingStatus.PUBLISHED
+  ) {
+    throw new AppError(
+      409,
+      "INVALID_LISTING_STATUS",
+      "Only draft or published listings can be updated.",
+    );
+  }
+
+  if (input.categoryId) {
+    const category = await prisma.category.findUnique({
+      where: { id: input.categoryId },
+      select: { id: true, isActive: true },
+    });
+
+    if (!category) {
+      throw new AppError(404, "CATEGORY_NOT_FOUND", "Category not found.");
+    }
+
+    if (!category.isActive) {
+      throw new AppError(
+        409,
+        "CATEGORY_INACTIVE",
+        "This category is not currently available.",
+      );
+    }
+  }
+
+  return prisma.listing.update({
+    where: { id: existing.id },
+    data: {
+      ...(input.categoryId === undefined ? {} : { categoryId: input.categoryId }),
+      ...(input.title === undefined ? {} : { title: input.title }),
+      ...(input.description === undefined ? {} : { description: input.description }),
+      ...(input.price === undefined ? {} : { price: input.price }),
+      ...(input.condition === undefined ? {} : { condition: input.condition }),
+      ...(input.location === undefined ? {} : { location: input.location }),
+    },
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      price: true,
+      condition: true,
+      location: true,
+      status: true,
+      createdAt: true,
+      publishedAt: true,
+      category: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+        },
+      },
+      images: {
+        where: { processingStatus: "READY" },
+        orderBy: { sortOrder: "asc" },
+        select: {
+          id: true,
+          objectKey: true,
+          sortOrder: true,
+        },
+      },
+    },
+  });
+}
+
+export async function removeListing(listingId: string, sellerId: string) {
+  await assertSellerAuthorized(sellerId);
+
+  const existing = await prisma.listing.findUnique({
+    where: { id: listingId },
+    select: {
+      id: true,
+      sellerId: true,
+      status: true,
+    },
+  });
+
+  if (!existing) {
+    throw new AppError(404, "LISTING_NOT_FOUND", "Listing not found.");
+  }
+
+  if (existing.sellerId !== sellerId) {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "You do not have permission to remove this listing.",
+    );
+  }
+
+  if (existing.status === ListingStatus.REMOVED) {
+    throw new AppError(
+      409,
+      "INVALID_LISTING_STATUS",
+      "This listing has already been removed.",
+    );
+  }
+
+  return prisma.listing.update({
+    where: { id: existing.id },
+    data: { status: ListingStatus.REMOVED },
+    select: {
+      id: true,
+      status: true,
+      updatedAt: true,
+    },
+  });
+}

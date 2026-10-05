@@ -1,10 +1,70 @@
+import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import Button from "../components/Button";
-import { previewListings } from "../services/listingService";
+import { getApiErrorMessage } from "../services/apiClient";
+import { getListingById } from "../services/listingService";
 
 export default function ListingDetails() {
   const { id } = useParams();
-  const listing = previewListings.find((item) => item.id === id) || previewListings[0];
+  const [state, setState] = useState({ status: "loading" });
+
+  useEffect(() => {
+    let active = true;
+    setState({ status: "loading" });
+
+    getListingById(id)
+      .then((listing) => {
+        if (active) setState({ status: "found", listing });
+      })
+      .catch((error) => {
+        if (!active) return;
+        setState({
+          status: error.response?.status === 404 ? "unavailable" : "error",
+          message: error.response?.status === 404
+            ? "This listing was not found or is no longer available."
+            : getApiErrorMessage(error),
+        });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [id]);
+
+  if (state.status === "loading") {
+    return (
+      <div className="page-shell listing-detail">
+        <Link className="text-link" to="/">← Back to listings</Link>
+        <p className="muted" role="status">Loading listing…</p>
+      </div>
+    );
+  }
+
+  if (state.status === "unavailable") {
+    return (
+      <div className="page-shell listing-detail">
+        <Link className="text-link" to="/">← Back to listings</Link>
+        <section role="status">
+          <h1>Listing unavailable</h1>
+          <p className="muted">{state.message}</p>
+        </section>
+      </div>
+    );
+  }
+
+  if (state.status === "error") {
+    return (
+      <div className="page-shell listing-detail">
+        <Link className="text-link" to="/">← Back to listings</Link>
+        <section role="alert">
+          <h1>Unable to load listing</h1>
+          <p className="muted">{state.message}</p>
+        </section>
+      </div>
+    );
+  }
+
+  const { listing } = state;
 
   return (
     <div className="page-shell listing-detail">
@@ -18,8 +78,8 @@ export default function ListingDetails() {
           <p className="muted">{listing.description}</p>
           <p className="listing-detail__location">Meet around {listing.location}</p>
           <div className="listing-detail__seller"><span className="avatar">MS</span><span><strong>{listing.seller.name}</strong><small>{listing.seller.verified ? "Verified student" : "Student seller"}</small></span></div>
-          <Button type="button">Contact seller</Button>
-          <p className="preview-note">This detail view is using preview data until the listings API is connected. Contacting a seller will require the backend messaging service.</p>
+          <Button type="button" disabled>Contact seller</Button>
+          <p className="preview-note">Contacting sellers is not available yet.</p>
         </section>
       </div>
     </div>

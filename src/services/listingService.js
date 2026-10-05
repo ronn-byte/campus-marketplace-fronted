@@ -36,7 +36,47 @@ export const previewListings = [
   },
 ];
 
+const listingImageFallback = "https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=900&q=80";
+
 export async function getListings(params = {}) {
   const { data } = await apiClient.get("/listings", { params });
-  return data.items || [];
+  const items = Array.isArray(data?.items)
+    ? data.items
+    : Array.isArray(data?.listings)
+      ? data.listings
+      : [];
+
+  return items.map((listing) => ({
+    ...listing,
+    category: typeof listing.category === "string"
+      ? listing.category
+      : listing.category?.name || "General",
+    imageUrl: typeof listing.imageUrl === "string" && /^https?:\/\//i.test(listing.imageUrl)
+      ? listing.imageUrl
+      : listingImageFallback,
+    seller: listing.seller || { name: "MUT student", verified: true },
+    condition: listing.condition || "Good",
+    location: listing.location || "Main campus",
+    price: Number(listing.price ?? 0),
+  }));
+}
+
+export async function getListingById(id) {
+  const { data } = await apiClient.get(`/listings/${encodeURIComponent(id)}`);
+  const listing = data?.listing;
+
+  if (!listing) {
+    throw new Error("The listing response was empty.");
+  }
+
+  return {
+    ...listing,
+    category: listing.category?.name || "General",
+    imageUrl: listingImageFallback,
+    seller: {
+      name: listing.seller?.name || "MUT student",
+      verified: Boolean(listing.seller?.verified),
+    },
+    price: Number(listing.price ?? 0),
+  };
 }
