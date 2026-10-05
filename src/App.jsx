@@ -6,6 +6,8 @@ import Login from "./pages/Login.jsx";
 import Register from "./pages/Register.jsx";
 import ForgotPassword from "./pages/ForgotPassword.jsx";
 import ListingDetails from "./pages/ListingDetails.jsx";
+import MyListings from "./pages/MyListings.jsx";
+import MyInquiries from "./pages/MyInquiries.jsx";
 import Navbar from "./components/Navbar.jsx";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import ResetPassword from "./pages/ResetPassword";
@@ -24,6 +26,8 @@ function App() {
             <Route path="/forgot-password" element={<ForgotPassword />} />
 	    <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/listing/:id" element={<ListingDetails />} />
+            <Route path="/my-listings" element={<MyListings />} />
+            <Route path="/my-inquiries" element={<MyInquiries />} />
 	    <Route path="/verify-email" element={<VerifyEmail />} />
             <Route path="/verify-university-email" element={<VerifyEmail />} />
           </Routes>

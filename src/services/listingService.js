@@ -135,3 +135,104 @@ export async function createListingInquiry(id, message) {
   );
   return data?.inquiry;
 }
+
+const normalizePage = (data, collectionKey) => {
+  const items = Array.isArray(data?.items)
+    ? data.items
+    : Array.isArray(data?.[collectionKey])
+      ? data[collectionKey]
+      : [];
+
+  return {
+    items,
+    meta: data?.meta || null,
+  };
+};
+
+const availableImageUrl = (record) => (
+  Array.isArray(record?.images) && typeof record.images[0]?.url === "string"
+    ? record.images[0].url
+    : typeof record?.imageUrl === "string"
+      ? record.imageUrl
+      : null
+);
+
+export async function getMyListings(params = {}) {
+  const { data } = await apiClient.get("/listings/me", { params });
+  const result = normalizePage(data, "listings");
+
+  return {
+    ...result,
+    items: result.items.map((listing) => ({
+      ...listing,
+      category: typeof listing.category === "string"
+        ? listing.category
+        : listing.category?.name || "General",
+      imageUrl: availableImageUrl(listing),
+      price: Number(listing.price ?? 0),
+    })),
+  };
+}
+
+export async function getMyInquiries(params = {}) {
+  const { data } = await apiClient.get("/inquiries/me", { params });
+  const result = normalizePage(data, "inquiries");
+
+  return {
+    ...result,
+    items: result.items.map((inquiry) => ({
+      ...inquiry,
+      listing: inquiry.listing
+        ? {
+            ...inquiry.listing,
+            category: typeof inquiry.listing.category === "string"
+              ? inquiry.listing.category
+              : inquiry.listing.category?.name || "General",
+            imageUrl: availableImageUrl(inquiry.listing),
+          }
+        : null,
+    })),
+  };
+}
+
+export async function getListingInquiries(listingId) {
+  const { data } = await apiClient.get(
+    `/listings/${encodeURIComponent(listingId)}/inquiries`,
+  );
+  if (!Array.isArray(data?.inquiries)) {
+    throw new Error("The inquiry response was invalid.");
+  }
+  return data.inquiries;
+}
+
+export async function updateListingInquiryStatus(listingId, inquiryId, status) {
+  if (status !== "RESPONDED" && status !== "CLOSED") {
+    throw new Error("The requested inquiry status is not supported.");
+  }
+  const { data } = await apiClient.patch(
+    `/listings/${encodeURIComponent(listingId)}/inquiries/${encodeURIComponent(inquiryId)}`,
+    { status },
+  );
+  return data?.inquiry;
+}
+
+export async function reserveListing(listingId) {
+  const { data } = await apiClient.post(
+    `/listings/${encodeURIComponent(listingId)}/reserve`,
+  );
+  return data?.listing;
+}
+
+export async function markListingSold(listingId) {
+  const { data } = await apiClient.post(
+    `/listings/${encodeURIComponent(listingId)}/sold`,
+  );
+  return data?.listing;
+}
+
+export async function releaseListingReservation(listingId) {
+  const { data } = await apiClient.post(
+    `/listings/${encodeURIComponent(listingId)}/release-reservation`,
+  );
+  return data?.listing;
+}
