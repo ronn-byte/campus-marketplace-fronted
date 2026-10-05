@@ -120,6 +120,7 @@ h2 { letter-spacing: -.03em; }
 .listing-detail__seller { display: flex; align-items: center; gap: 12px; margin-bottom: 26px; }
 .listing-detail__seller small { display: block; margin-top: 3px; color: var(--color-text-muted); }
 .listing-detail section > .button { width: 100%; }
+.listing-detail form > .button { width: 100%; }
 
 @media (max-width: 820px) {
   .site-nav__inner { gap: 20px; }

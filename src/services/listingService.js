@@ -80,3 +80,11 @@ export async function getListingById(id) {
     price: Number(listing.price ?? 0),
   };
 }
+
+export async function createListingInquiry(id, message) {
+  const { data } = await apiClient.post(
+    `/listings/${encodeURIComponent(id)}/inquiries`,
+    { message },
+  );
+  return data?.inquiry;
+}

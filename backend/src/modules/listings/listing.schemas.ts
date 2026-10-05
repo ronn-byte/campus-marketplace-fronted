@@ -22,6 +22,10 @@ export const listingParamsSchema = z.object({
   listingId: z.string().uuid(),
 }).strict();
 
+export const createListingInquirySchema = z.object({
+  message: z.string().trim().min(1).max(2000),
+}).strict();
+
 export const updateListingSchema = createListingSchema
   .partial()
   .strict()

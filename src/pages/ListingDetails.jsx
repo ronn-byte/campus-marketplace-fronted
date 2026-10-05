@@ -1,12 +1,16 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import Button from "../components/Button";
+import { useAuth } from "../hooks/useAuth";
 import { getApiErrorMessage } from "../services/apiClient";
-import { getListingById } from "../services/listingService";
+import { createListingInquiry, getListingById } from "../services/listingService";
 
 export default function ListingDetails() {
   const { id } = useParams();
+  const { isAuthenticated, isLoading: isAuthLoading } = useAuth();
   const [state, setState] = useState({ status: "loading" });
+  const [message, setMessage] = useState("");
+  const [inquiryState, setInquiryState] = useState({ status: "idle" });
 
   useEffect(() => {
     let active = true;
@@ -30,6 +34,25 @@ export default function ListingDetails() {
       active = false;
     };
   }, [id]);
+
+  const handleInquirySubmit = async (event) => {
+    event.preventDefault();
+    setInquiryState({ status: "submitting" });
+
+    try {
+      await createListingInquiry(id, message);
+      setMessage("");
+      setInquiryState({
+        status: "success",
+        message: "Your inquiry has been sent to the seller.",
+      });
+    } catch (error) {
+      setInquiryState({
+        status: "error",
+        message: getApiErrorMessage(error),
+      });
+    }
+  };
 
   if (state.status === "loading") {
     return (
@@ -78,8 +101,38 @@ export default function ListingDetails() {
           <p className="muted">{listing.description}</p>
           <p className="listing-detail__location">Meet around {listing.location}</p>
           <div className="listing-detail__seller"><span className="avatar">MS</span><span><strong>{listing.seller.name}</strong><small>{listing.seller.verified ? "Verified student" : "Student seller"}</small></span></div>
-          <Button type="button" disabled>Contact seller</Button>
-          <p className="preview-note">Contacting sellers is not available yet.</p>
+          {isAuthLoading ? (
+            <p className="muted" role="status">Checking your sign-in status…</p>
+          ) : isAuthenticated ? (
+            <form onSubmit={handleInquirySubmit}>
+              {inquiryState.status === "success" && (
+                <p className="preview-note" role="status">{inquiryState.message}</p>
+              )}
+              {inquiryState.status === "error" && (
+                <p className="form-alert" role="alert">{inquiryState.message}</p>
+              )}
+              <div className="field">
+                <label htmlFor="listing-inquiry-message">Message to the seller</label>
+                <textarea
+                  id="listing-inquiry-message"
+                  value={message}
+                  onChange={(event) => setMessage(event.target.value)}
+                  minLength={1}
+                  maxLength={2000}
+                  required
+                  disabled={inquiryState.status === "submitting"}
+                />
+              </div>
+              <Button type="submit" disabled={inquiryState.status === "submitting"}>
+                {inquiryState.status === "submitting" ? "Sending…" : "Send inquiry"}
+              </Button>
+            </form>
+          ) : (
+            <div>
+              <p className="muted">Sign in to ask the seller about this listing.</p>
+              <Link className="text-link" to="/login">Log in to send an inquiry</Link>
+            </div>
+          )}
         </section>
       </div>
     </div>

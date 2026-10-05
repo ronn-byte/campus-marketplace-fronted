@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import { AppError } from "../../app/errors.js";
 import { requireAuth } from "../../middleware/auth.js";
 import {
+  createListingInquirySchema,
   createListingSchema,
   listingParamsSchema,
   listListingsQuerySchema,
@@ -10,7 +11,9 @@ import {
 } from "./listing.schemas.js";
 
 import {
+  createListingInquiry,
   createListing,
+  getListingInquiries,
   getPublicListing,
   getPublishedListings,
   publishListing,
@@ -49,6 +52,68 @@ export async function registerListingRoutes(app: FastifyInstance) {
     const listing = await getPublicListing(result.data.listingId);
     return reply.status(200).send({ listing });
   });
+
+  app.post(
+    "/listings/:listingId/inquiries",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+      }
+
+      const result = createListingInquirySchema.safeParse(request.body);
+      if (!result.success) {
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "Please check the submitted fields.",
+        );
+      }
+
+      const user = request.user;
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const inquiry = await createListingInquiry(
+        params.data.listingId,
+        user.id,
+        result.data.message,
+      );
+      return reply.status(201).send({ inquiry });
+    },
+  );
+
+  app.get(
+    "/listings/:listingId/inquiries",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+      }
+
+      const user = request.user;
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const inquiries = await getListingInquiries(
+        params.data.listingId,
+        user.id,
+      );
+      return reply.status(200).send({ inquiries });
+    },
+  );
 
   app.patch(
     "/listings/:listingId",

@@ -291,6 +291,91 @@ export async function getPublicListing(listingId: string) {
   };
 }
 
+export async function createListingInquiry(
+  listingId: string,
+  buyerId: string,
+  message: string,
+) {
+  const listing = await prisma.listing.findFirst({
+    where: {
+      id: listingId,
+      status: ListingStatus.PUBLISHED,
+    },
+    select: { id: true },
+  });
+
+  if (!listing) {
+    throw new AppError(
+      404,
+      "LISTING_NOT_FOUND",
+      "Listing not found or is no longer available.",
+    );
+  }
+
+  return prisma.listingInquiry.create({
+    data: {
+      listingId: listing.id,
+      buyerId,
+      message,
+    },
+    select: {
+      message: true,
+      status: true,
+      createdAt: true,
+    },
+  });
+}
+
+export async function getListingInquiries(
+  listingId: string,
+  sellerId: string,
+) {
+  const listing = await prisma.listing.findUnique({
+    where: { id: listingId },
+    select: { id: true, sellerId: true },
+  });
+
+  if (!listing) {
+    throw new AppError(404, "LISTING_NOT_FOUND", "Listing not found.");
+  }
+
+  if (listing.sellerId !== sellerId) {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "You do not have permission to view inquiries for this listing.",
+    );
+  }
+
+  const inquiries = await prisma.listingInquiry.findMany({
+    where: { listingId: listing.id },
+    orderBy: { createdAt: "asc" },
+    select: {
+      message: true,
+      status: true,
+      createdAt: true,
+      buyer: {
+        select: {
+          studentProfile: {
+            select: {
+              displayName: true,
+              verificationStatus: true,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  return inquiries.map(({ buyer, ...inquiry }) => ({
+    ...inquiry,
+    buyer: {
+      name: buyer.studentProfile?.displayName ?? "MUT student",
+      verified: buyer.studentProfile?.verificationStatus === "APPROVED",
+    },
+  }));
+}
+
 type UpdateListingInput = {
   [Key in keyof CreateListingInput]?: CreateListingInput[Key] | undefined;
 };

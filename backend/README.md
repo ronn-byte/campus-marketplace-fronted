@@ -1,6 +1,6 @@
 # Campus Marketplace Backend
 
-The backend includes the Phase 1 foundation and the Phase 2 authentication boundary. Listings, messaging, moderation, uploads, payments, and other marketplace workflows remain unimplemented.
+The backend includes the Phase 1 foundation, the Phase 2 authentication boundary, public listings, and listing inquiries. General messaging, moderation, uploads, payments, and other marketplace workflows remain unimplemented.
 
 ## Architecture
 
@@ -9,6 +9,7 @@ The backend includes the Phase 1 foundation and the Phase 2 authentication bound
 - `src/lib`: shared infrastructure such as the Prisma client
 - `src/routes`: future domain route modules
 - `src/modules/auth`: password, session, verification, reset, and auth route boundaries
+- `src/modules/listings`: public listing lifecycle and listing inquiry routes/services
 - `src/middleware`: reusable authentication and role middleware
 - `src/server.ts`: production entry point
 - `prisma/schema.prisma`: PostgreSQL schema foundation
@@ -78,6 +79,14 @@ Authentication endpoints include registration, login, logout, `/auth/me`, email 
 Sessions are opaque random cookies. Only SHA-256 session hashes are stored in PostgreSQL. Passwords use Argon2id. Email delivery is intentionally not configured yet; verification and reset tokens are generated and stored hashed, but never returned or logged.
 
 Authentication rate limiting is bounded in memory for the single-instance development architecture. A shared rate-limit store is required before horizontal production scaling.
+
+### Listing inquiries
+
+- `POST /api/v1/listings/:listingId/inquiries` requires an authenticated user but not student verification. Buyer identity is taken only from the session.
+- `GET /api/v1/listings/:listingId/inquiries` requires authentication and the listing's database owner.
+- Only `PUBLISHED` listings accept inquiries, matching the existing public listing collection and detail routes. `DRAFT`, `RESERVED`, `SOLD`, `SUSPENDED`, and `REMOVED` listings are unavailable for inquiry.
+- Duplicate inquiries are allowed; the Prisma model has no unique constraint for a buyer/listing pair.
+- New inquiries use the existing `OPEN` status. Responses and status transitions are deferred because the model has no response-message field.
 
 ## Validation commands
 
