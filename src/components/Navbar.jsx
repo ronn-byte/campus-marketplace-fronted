@@ -75,7 +75,7 @@ export default function Navbar() {
                   <Link to="/profile" className="profile-menu__item" onClick={() => setMenuOpen(false)}>My Profile</Link>
                   <Link to="/my-listings" className="profile-menu__item" onClick={() => setMenuOpen(false)}>My Listings</Link>
                   <Link to="/my-inquiries" className="profile-menu__item" onClick={() => setMenuOpen(false)}>My Inquiries</Link>
-                  <Link to="/profile" className="profile-menu__item" onClick={() => setMenuOpen(false)}>Settings</Link>
+                  <Link to="/settings" className="profile-menu__item" onClick={() => setMenuOpen(false)}>Settings</Link>
                   <button type="button" className="profile-menu__action" onClick={handleLogout}>Log out</button>
                 </div>
               )}

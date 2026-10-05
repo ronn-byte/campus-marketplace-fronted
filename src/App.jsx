@@ -10,6 +10,7 @@ import ListingDetails from "./pages/ListingDetails.jsx";
 import MyListings from "./pages/MyListings.jsx";
 import MyInquiries from "./pages/MyInquiries.jsx";
 import Profile from "./pages/Profile.jsx";
+import Settings from "./pages/Settings.jsx";
 import Navbar from "./components/Navbar.jsx";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import ResetPassword from "./pages/ResetPassword";
@@ -31,6 +32,7 @@ function App() {
             <Route path="/my-listings" element={<MyListings />} />
             <Route path="/my-inquiries" element={<MyInquiries />} />
             <Route path="/profile" element={<Profile />} />
+            <Route path="/settings" element={<Settings />} />
             <Route path="/verify-student" element={<VerifyStudent />} />
             <Route path="/verify-email" element={<VerifyEmail />} />
             <Route path="/verify-university-email" element={<VerifyEmail />} />
