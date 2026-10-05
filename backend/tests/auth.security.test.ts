@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test, { before, after } from "node:test";
-import { AccountStatus, VerificationMethod } from "@prisma/client";
+import {
+  AccountStatus,
+  EmailVerificationPurpose,
+  VerificationMethod,
+  VerificationStatus,
+} from "@prisma/client";
 
 process.env.NODE_ENV = "test";
 process.env.RESEND_API_KEY = "test-key";
@@ -40,6 +45,7 @@ after(() => {
 });
 
 const { prisma } = await import("../src/lib/prisma.js");
+const { buildApp } = await import("../src/app/app.js");
 const {
   authenticate,
   register,
@@ -51,8 +57,10 @@ const {
   resetPassword,
   verifyEmail,
 } = await import("../src/modules/auth/auth.service.js");
+const { assertSellerAuthorized } = await import("../src/modules/verification/verification.service.js");
 const { hashToken, createOpaqueToken } = await import("../src/modules/auth/auth.utils.js");
 const { AppError } = await import("../src/app/errors.js");
+const app = buildApp();
 
 async function cleanupTestUser(email: string) {
   await prisma.$transaction([
@@ -64,6 +72,69 @@ async function cleanupTestUser(email: string) {
     prisma.user.deleteMany({ where: { email } }),
   ]);
 }
+
+test("Registration succeeds and remains pending when account verification email delivery fails", async () => {
+  const email = "test-registration-email-delivery-failure@example.com";
+  await cleanupTestUser(email);
+
+  const originalSend = resend.emails.send;
+  let attemptedToken: string | undefined;
+  resend.emails.send = async (payload) => {
+    const html = typeof payload.html === "string" ? payload.html : "";
+    const tokenMatch = html.match(/verify-email\?token=([^"&]+)/);
+    attemptedToken = tokenMatch ? decodeURIComponent(tokenMatch[1]) : undefined;
+    throw new Error("Resend testing mode rejected recipient");
+  };
+
+  try {
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
+        email,
+        password: "test-password-12345",
+        displayName: "Test User",
+        verificationMethod: VerificationMethod.MANUAL_STUDENT,
+        registrationNumber: "ABC123DEF470",
+      },
+    });
+
+    assert.equal(response.statusCode, 201);
+    const user = await prisma.user.findUnique({
+      where: { email },
+      include: {
+        studentProfile: true,
+        verificationsSubmitted: true,
+        verificationTokens: true,
+      },
+    });
+    assert.ok(user);
+    assert.equal(user.accountStatus, AccountStatus.ACTIVE);
+    assert.equal(user.emailVerifiedAt, null);
+    assert.equal(user.studentProfile?.verificationStatus, VerificationStatus.PENDING);
+    assert.equal(user.verificationsSubmitted[0]?.status, VerificationStatus.PENDING);
+    assert.equal(user.verificationsSubmitted[0]?.method, VerificationMethod.MANUAL_STUDENT);
+    assert.equal(user.verificationTokens.length, 1);
+    assert.equal(user.verificationTokens[0]?.purpose, EmailVerificationPurpose.ACCOUNT_EMAIL);
+    assert.ok(attemptedToken);
+    assert.equal(user.verificationTokens[0]?.tokenHash, hashToken(attemptedToken));
+    assert.notEqual(user.verificationTokens[0]?.tokenHash, attemptedToken);
+
+    const login = await authenticate({
+      email,
+      identifier: undefined,
+      password: "test-password-12345",
+    });
+    assert.equal(login.user.email, email);
+    await assert.rejects(
+      () => assertSellerAuthorized(user.id),
+      (error: unknown) => error instanceof AppError && error.code === "SELLER_VERIFICATION_REQUIRED",
+    );
+  } finally {
+    resend.emails.send = originalSend;
+    await cleanupTestUser(email);
+  }
+});
 
 test("Authentication: unauthenticated request", async () => {
   try {

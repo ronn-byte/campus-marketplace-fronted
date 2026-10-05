@@ -136,7 +136,11 @@ export async function register(input: RegisterInput) {
 
     // Email ownership verification is separate from student verification.
     // Accounts remain usable while student verification is pending.
-    await sendVerificationEmail(input.email, rawToken);
+    try {
+      await sendVerificationEmail(input.email, rawToken);
+    } catch (error) {
+      console.error("Registration continued without sending the account verification email.", error);
+    }
 
     return toSafeUser(user);
   } catch (error) {
