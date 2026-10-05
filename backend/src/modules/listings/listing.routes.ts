@@ -11,8 +11,10 @@ import {
 } from "./listing.schemas.js";
 
 import {
+  addListingImages,
   createListingInquiry,
   createListing,
+  getListingCategories,
   getListingInquiries,
   getPublicListing,
   getPublishedListings,
@@ -22,6 +24,11 @@ import {
 } from "./listing.service.js";
 
 export async function registerListingRoutes(app: FastifyInstance) {
+  app.get("/categories", async (_request, reply) => {
+    const categories = await getListingCategories();
+    return reply.status(200).send({ categories });
+  });
+
   app.get("/listings", async (request, reply) => {
     const result = listListingsQuerySchema.safeParse(request.query);
 
@@ -52,6 +59,46 @@ export async function registerListingRoutes(app: FastifyInstance) {
     const listing = await getPublicListing(result.data.listingId);
     return reply.status(200).send({ listing });
   });
+
+  app.post(
+    "/listings/:listingId/images",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+      }
+
+      const user = request.user;
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const files: Array<{ mimetype: string; buffer: Buffer }> = [];
+
+      for await (const part of request.parts()) {
+        if (part.type !== "file") {
+          throw new AppError(
+            400,
+            "BAD_REQUEST",
+            "Only image files may be included in this request.",
+          );
+        }
+
+        files.push({
+          mimetype: part.mimetype,
+          buffer: await part.toBuffer(),
+        });
+      }
+
+      const images = await addListingImages(params.data.listingId, user.id, files);
+      return reply.status(201).send({ images });
+    },
+  );
 
   app.post(
     "/listings/:listingId/inquiries",

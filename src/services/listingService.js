@@ -46,19 +46,27 @@ export async function getListings(params = {}) {
       ? data.listings
       : [];
 
-  return items.map((listing) => ({
-    ...listing,
-    category: typeof listing.category === "string"
-      ? listing.category
-      : listing.category?.name || "General",
-    imageUrl: typeof listing.imageUrl === "string" && /^https?:\/\//i.test(listing.imageUrl)
-      ? listing.imageUrl
-      : listingImageFallback,
-    seller: listing.seller || { name: "MUT student", verified: true },
-    condition: listing.condition || "Good",
-    location: listing.location || "Main campus",
-    price: Number(listing.price ?? 0),
-  }));
+  return items.map((listing) => {
+    const imageUrl = (
+      Array.isArray(listing.images) && listing.images.length > 0 && typeof listing.images[0].url === "string"
+        ? listing.images[0].url
+        : typeof listing.imageUrl === "string" && /^https?:\/\//i.test(listing.imageUrl)
+          ? listing.imageUrl
+          : listingImageFallback
+    );
+
+    return {
+      ...listing,
+      category: typeof listing.category === "string"
+        ? listing.category
+        : listing.category?.name || "General",
+      imageUrl,
+      seller: listing.seller || { name: "MUT student", verified: true },
+      condition: listing.condition || "Good",
+      location: listing.location || "Main campus",
+      price: Number(listing.price ?? 0),
+    };
+  });
 }
 
 export async function getListingById(id) {
@@ -69,16 +77,55 @@ export async function getListingById(id) {
     throw new Error("The listing response was empty.");
   }
 
+  const imageUrl = (
+    Array.isArray(listing.images) && listing.images.length > 0 && typeof listing.images[0].url === "string"
+      ? listing.images[0].url
+      : listingImageFallback
+  );
+
   return {
     ...listing,
     category: listing.category?.name || "General",
-    imageUrl: listingImageFallback,
+    imageUrl,
     seller: {
       name: listing.seller?.name || "MUT student",
       verified: Boolean(listing.seller?.verified),
     },
     price: Number(listing.price ?? 0),
   };
+}
+
+export async function getListingCategories() {
+  const { data } = await apiClient.get("/categories");
+  if (!Array.isArray(data?.categories)) {
+    throw new Error("The category response was invalid.");
+  }
+  return data.categories;
+}
+
+export async function createListing(payload) {
+  const { data } = await apiClient.post("/listings", payload);
+  if (!data?.listing?.id) {
+    throw new Error("The listing response did not include an ID.");
+  }
+  return data.listing;
+}
+
+export async function uploadListingImages(id, files) {
+  const payload = new FormData();
+  files.forEach((file) => payload.append("images", file));
+
+  const { data } = await apiClient.post(
+    `/listings/${encodeURIComponent(id)}/images`,
+    payload,
+  );
+  if (
+    !Array.isArray(data?.images) ||
+    data.images.some((image) => typeof image?.url !== "string")
+  ) {
+    throw new Error("The image upload response did not include image URLs.");
+  }
+  return data.images;
 }
 
 export async function createListingInquiry(id, message) {

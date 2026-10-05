@@ -1,7 +1,21 @@
 import { ListingCondition, ListingStatus } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 import { prisma } from "../../lib/prisma.js";
+import {
+  ALLOWED_LISTING_IMAGE_TYPES,
+  MAX_LISTING_IMAGE_BYTES,
+  MAX_LISTING_IMAGES_PER_LISTING,
+  createListingObjectKey,
+  deleteListingImageFiles,
+  getListingImageUrl,
+  writeListingImageFile,
+} from "../../lib/storage.js";
 import { assertSellerAuthorized } from "../verification/verification.service.js";
+
+type ListingImageUpload = {
+  buffer: Buffer;
+  mimetype?: string;
+};
 
 type CreateListingInput = {
   categoryId: string;
@@ -11,6 +25,21 @@ type CreateListingInput = {
   condition: ListingCondition;
   location: string;
 };
+
+function withImageUrls<T extends { objectKey: string }>(images: T[]) {
+  return images.map((image) => ({
+    ...image,
+    url: getListingImageUrl(image.objectKey),
+  }));
+}
+
+export async function getListingCategories() {
+  return prisma.category.findMany({
+    where: { isActive: true },
+    select: { id: true, name: true, slug: true },
+    orderBy: { name: "asc" },
+  });
+}
 
 export async function createListing(
   sellerId: string,
@@ -52,7 +81,128 @@ export async function createListing(
     },
   });
 
-  return listing;
+  return {
+    ...listing,
+    images: withImageUrls(listing.images),
+  };
+}
+
+export async function addListingImages(
+  listingId: string,
+  sellerId: string,
+  files: ListingImageUpload[],
+) {
+  await assertSellerAuthorized(sellerId);
+
+  if (files.length === 0) {
+    throw new AppError(422, "VALIDATION_ERROR", "Please upload at least one image.");
+  }
+
+  if (files.length > MAX_LISTING_IMAGES_PER_LISTING) {
+    throw new AppError(
+      422,
+      "VALIDATION_ERROR",
+      `A listing may contain up to ${MAX_LISTING_IMAGES_PER_LISTING} images.`,
+    );
+  }
+
+  const listing = await prisma.listing.findUnique({
+    where: { id: listingId },
+    select: { id: true, sellerId: true, status: true },
+  });
+
+  if (!listing) {
+    throw new AppError(404, "LISTING_NOT_FOUND", "Listing not found.");
+  }
+
+  if (listing.sellerId !== sellerId) {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "You do not have permission to upload images for this listing.",
+    );
+  }
+
+  if (
+    listing.status !== ListingStatus.DRAFT &&
+    listing.status !== ListingStatus.PUBLISHED
+  ) {
+    throw new AppError(
+      409,
+      "INVALID_LISTING_STATUS",
+      "Only draft or published listings can receive images.",
+    );
+  }
+
+  const existingCount = await prisma.listingImage.count({
+    where: { listingId: listing.id },
+  });
+
+  if (existingCount + files.length > MAX_LISTING_IMAGES_PER_LISTING) {
+    throw new AppError(
+      422,
+      "VALIDATION_ERROR",
+      `A listing may contain up to ${MAX_LISTING_IMAGES_PER_LISTING} images.`,
+    );
+  }
+
+  const uploadedObjectKeys: string[] = [];
+  const records: {
+    listingId: string;
+    objectKey: string;
+    sortOrder: number;
+    processingStatus: "READY";
+  }[] = [];
+
+  try {
+    for (const [index, file] of files.entries()) {
+      const mimeType = file.mimetype?.toLowerCase();
+      if (!mimeType || !ALLOWED_LISTING_IMAGE_TYPES.has(mimeType)) {
+        throw new AppError(
+          422,
+          "INVALID_IMAGE_TYPE",
+          "Only JPEG, PNG, and WebP images are allowed.",
+        );
+      }
+
+      const buffer = file.buffer;
+      if (buffer.byteLength === 0 || buffer.byteLength > MAX_LISTING_IMAGE_BYTES) {
+        throw new AppError(
+          422,
+          "INVALID_IMAGE_SIZE",
+          "Each image must be smaller than 5 MB.",
+        );
+      }
+
+      const objectKey = createListingObjectKey(listingId, mimeType);
+      await writeListingImageFile(objectKey, buffer);
+      uploadedObjectKeys.push(objectKey);
+      records.push({
+        listingId: listing.id,
+        objectKey,
+        sortOrder: existingCount + index,
+        processingStatus: "READY",
+      });
+    }
+
+    await prisma.listingImage.createMany({
+      data: records,
+    });
+
+    const images = await prisma.listingImage.findMany({
+      where: { listingId: listing.id },
+      orderBy: { sortOrder: "asc" },
+      select: { id: true, objectKey: true, sortOrder: true, processingStatus: true },
+    });
+
+    return withImageUrls(images);
+  } catch (error) {
+    if (uploadedObjectKeys.length > 0) {
+      await deleteListingImageFiles(uploadedObjectKeys);
+    }
+
+    throw error;
+  }
 }
 
 type PublishListingInput = {
@@ -204,7 +354,10 @@ export async function getPublishedListings(
   ]);
 
   return {
-    listings,
+    listings: listings.map((listing) => ({
+      ...listing,
+      images: withImageUrls(listing.images),
+    })),
     meta: {
       page: input.page,
       pageSize: input.pageSize,
@@ -282,7 +435,7 @@ export async function getPublicListing(listingId: string) {
     createdAt: listing.createdAt,
     publishedAt: listing.publishedAt,
     category: listing.category,
-    images: listing.images,
+    images: withImageUrls(listing.images),
     seller: {
       name: listing.seller.studentProfile?.displayName ?? "MUT student",
       verified:
@@ -438,7 +591,7 @@ export async function updateListing(
     }
   }
 
-  return prisma.listing.update({
+  const listing = await prisma.listing.update({
     where: { id: existing.id },
     data: {
       ...(input.categoryId === undefined ? {} : { categoryId: input.categoryId }),
@@ -476,6 +629,11 @@ export async function updateListing(
       },
     },
   });
+
+  return {
+    ...listing,
+    images: withImageUrls(listing.images),
+  };
 }
 
 export async function removeListing(listingId: string, sellerId: string) {
@@ -509,6 +667,13 @@ export async function removeListing(listingId: string, sellerId: string) {
       "This listing has already been removed.",
     );
   }
+
+  const listingImages = await prisma.listingImage.findMany({
+    where: { listingId: existing.id },
+    select: { objectKey: true },
+  });
+
+  await deleteListingImageFiles(listingImages.map((image) => image.objectKey));
 
   return prisma.listing.update({
     where: { id: existing.id },

@@ -13,6 +13,8 @@ const envSchema = z.object({
   RESEND_API_KEY: z.string().min(1),
   EMAIL_FROM: z.string().email(),
   APP_URL: z.string().url(),
+  UPLOAD_ROOT: z.string().min(1).default("uploads"),
+  UPLOAD_BASE_URL: z.string().url().optional(),
   STUDENT_DATA_ENCRYPTION_KEY: z.string().base64().optional(),
 });
 

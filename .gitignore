@@ -22,3 +22,5 @@ yarn-error.log*
 .vite/
 # Build output
 **/dist/
+# Local uploaded listing media
+/backend/uploads/
