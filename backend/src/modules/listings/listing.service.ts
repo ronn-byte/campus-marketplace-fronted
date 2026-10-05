@@ -1,4 +1,8 @@
-import { ListingCondition, ListingStatus } from "@prisma/client";
+import {
+  ListingCondition,
+  ListingInquiryStatus,
+  ListingStatus,
+} from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 import { prisma } from "../../lib/prisma.js";
 import {
@@ -552,6 +556,110 @@ export async function getPublicListing(listingId: string) {
   };
 }
 
+export async function getSellerListings(
+  sellerId: string,
+  input: ListPublishedListingsInput,
+) {
+  const skip = (input.page - 1) * input.pageSize;
+
+  const [listings, total] = await prisma.$transaction([
+    prisma.listing.findMany({
+      where: { sellerId },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: input.pageSize,
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        price: true,
+        condition: true,
+        location: true,
+        status: true,
+        createdAt: true,
+        publishedAt: true,
+        soldAt: true,
+        category: {
+          select: { id: true, name: true, slug: true },
+        },
+        images: {
+          where: { processingStatus: "READY" },
+          orderBy: { sortOrder: "asc" },
+          select: { id: true, objectKey: true, sortOrder: true },
+        },
+      },
+    }),
+    prisma.listing.count({ where: { sellerId } }),
+  ]);
+
+  const items = listings.map((listing) => ({
+    ...listing,
+    images: withImageUrls(listing.images),
+  }));
+
+  return {
+    items,
+    listings: items,
+    meta: {
+      page: input.page,
+      pageSize: input.pageSize,
+      total,
+      totalPages: Math.ceil(total / input.pageSize),
+    },
+  };
+}
+
+export async function getBuyerInquiries(
+  buyerId: string,
+  input: ListPublishedListingsInput,
+) {
+  const skip = (input.page - 1) * input.pageSize;
+
+  const [inquiries, total] = await prisma.$transaction([
+    prisma.listingInquiry.findMany({
+      where: { buyerId },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: input.pageSize,
+      select: {
+        id: true,
+        message: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        listing: {
+          select: {
+            id: true,
+            title: true,
+            status: true,
+            category: {
+              select: { id: true, name: true, slug: true },
+            },
+          },
+        },
+      },
+    }),
+    prisma.listingInquiry.count({ where: { buyerId } }),
+  ]);
+
+  return {
+    inquiries: inquiries.map((inquiry) => ({
+      id: inquiry.id,
+      message: inquiry.message,
+      status: inquiry.status,
+      createdAt: inquiry.createdAt,
+      updatedAt: inquiry.updatedAt,
+      listing: inquiry.listing,
+    })),
+    meta: {
+      page: input.page,
+      pageSize: input.pageSize,
+      total,
+      totalPages: Math.ceil(total / input.pageSize),
+    },
+  };
+}
+
 export async function createListingInquiry(
   listingId: string,
   buyerId: string,
@@ -612,9 +720,11 @@ export async function getListingInquiries(
     where: { listingId: listing.id },
     orderBy: { createdAt: "asc" },
     select: {
+      id: true,
       message: true,
       status: true,
       createdAt: true,
+      updatedAt: true,
       buyer: {
         select: {
           studentProfile: {
@@ -635,6 +745,95 @@ export async function getListingInquiries(
       verified: buyer.studentProfile?.verificationStatus === "APPROVED",
     },
   }));
+}
+
+export async function updateInquiryStatus(
+  listingId: string,
+  inquiryId: string,
+  sellerId: string,
+  status: ListingInquiryStatus,
+) {
+  await assertSellerAuthorized(sellerId);
+
+  const listing = await prisma.listing.findUnique({
+    where: { id: listingId },
+    select: { id: true, sellerId: true },
+  });
+
+  if (!listing) {
+    throw new AppError(404, "LISTING_NOT_FOUND", "Listing not found.");
+  }
+
+  if (listing.sellerId !== sellerId) {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "You do not have permission to update inquiries for this listing.",
+    );
+  }
+
+  const inquiry = await prisma.listingInquiry.findUnique({
+    where: { id: inquiryId },
+    select: { id: true, listingId: true, status: true },
+  });
+
+  if (!inquiry) {
+    throw new AppError(404, "INQUIRY_NOT_FOUND", "Inquiry not found.");
+  }
+
+  if (inquiry.listingId !== listingId) {
+    throw new AppError(
+      404,
+      "INQUIRY_NOT_FOUND",
+      "Inquiry not found for this listing.",
+    );
+  }
+
+  const validTransitions: Record<ListingInquiryStatus, ListingInquiryStatus[]> = {
+    OPEN: [ListingInquiryStatus.RESPONDED, ListingInquiryStatus.CLOSED],
+    RESPONDED: [ListingInquiryStatus.CLOSED],
+    CLOSED: [],
+  };
+
+  if (!validTransitions[inquiry.status].includes(status)) {
+    throw new AppError(
+      409,
+      "INVALID_INQUIRY_STATUS",
+      `This inquiry cannot transition from ${inquiry.status} to ${status}.`,
+    );
+  }
+
+  const result = await prisma.listingInquiry.updateMany({
+    where: {
+      id: inquiryId,
+      listingId,
+      status: inquiry.status,
+      listing: {
+        sellerId,
+      },
+    },
+    data: {
+      status,
+      updatedAt: new Date(),
+    },
+  });
+
+  if (result.count !== 1) {
+    throw new AppError(
+      409,
+      "INVALID_INQUIRY_STATUS",
+      "The inquiry status changed before this update could be applied.",
+    );
+  }
+
+  return prisma.listingInquiry.findUniqueOrThrow({
+    where: { id: inquiryId },
+    select: {
+      id: true,
+      status: true,
+      updatedAt: true,
+    },
+  });
 }
 
 type UpdateListingInput = {

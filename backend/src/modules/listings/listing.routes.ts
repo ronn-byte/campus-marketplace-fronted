@@ -4,9 +4,11 @@ import { requireAuth } from "../../middleware/auth.js";
 import {
   createListingInquirySchema,
   createListingSchema,
+  listingInquiryParamsSchema,
   listingParamsSchema,
   listListingsQuerySchema,
   publishListingParamsSchema,
+  updateInquiryStatusSchema,
   updateListingSchema,
 } from "./listing.schemas.js";
 
@@ -14,15 +16,18 @@ import {
   addListingImages,
   createListingInquiry,
   createListing,
+  getBuyerInquiries,
   getListingCategories,
   getListingInquiries,
   getPublicListing,
   getPublishedListings,
+  getSellerListings,
   markListingSold,
   publishListing,
   releaseListingReservation,
   reserveListing,
   removeListing,
+  updateInquiryStatus,
   updateListing,
 } from "./listing.service.js";
 
@@ -50,6 +55,54 @@ export async function registerListingRoutes(app: FastifyInstance) {
       listings: listings.listings,
       meta: listings.meta,
     });
+  });
+
+  app.get("/listings/me", { preHandler: requireAuth }, async (request, reply) => {
+    const result = listListingsQuerySchema.safeParse(request.query);
+
+    if (!result.success) {
+      throw new AppError(
+        422,
+        "VALIDATION_ERROR",
+        "Please check the submitted query parameters.",
+      );
+    }
+
+    const user = request.user;
+    if (!user) {
+      throw new AppError(
+        401,
+        "UNAUTHENTICATED",
+        "Authentication is required.",
+      );
+    }
+
+    const listings = await getSellerListings(user.id, result.data);
+    return reply.status(200).send(listings);
+  });
+
+  app.get("/inquiries/me", { preHandler: requireAuth }, async (request, reply) => {
+    const result = listListingsQuerySchema.safeParse(request.query);
+
+    if (!result.success) {
+      throw new AppError(
+        422,
+        "VALIDATION_ERROR",
+        "Please check the submitted query parameters.",
+      );
+    }
+
+    const user = request.user;
+    if (!user) {
+      throw new AppError(
+        401,
+        "UNAUTHENTICATED",
+        "Authentication is required.",
+      );
+    }
+
+    const inquiries = await getBuyerInquiries(user.id, result.data);
+    return reply.status(200).send(inquiries);
   });
 
   app.get("/listings/:listingId", async (request, reply) => {
@@ -162,6 +215,48 @@ export async function registerListingRoutes(app: FastifyInstance) {
         user.id,
       );
       return reply.status(200).send({ inquiries });
+    },
+  );
+
+  app.patch(
+    "/listings/:listingId/inquiries/:inquiryId",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingInquiryParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing or inquiry ID is invalid.",
+        );
+      }
+
+      const result = updateInquiryStatusSchema.safeParse(request.body);
+      if (!result.success) {
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "Please check the submitted fields.",
+        );
+      }
+
+      const user = request.user;
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const inquiry = await updateInquiryStatus(
+        params.data.listingId,
+        params.data.inquiryId,
+        user.id,
+        result.data.status,
+      );
+
+      return reply.status(200).send({ inquiry });
     },
   );
 

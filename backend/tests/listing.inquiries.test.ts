@@ -350,7 +350,6 @@ test("listing inquiry retrieval is authenticated, owner-only, and returns safe b
 
     const keys = collectObjectKeys(body);
     for (const sensitiveField of [
-      "id",
       "buyerId",
       "sellerId",
       "email",
@@ -363,6 +362,7 @@ test("listing inquiry retrieval is authenticated, owner-only, and returns safe b
     ]) {
       assert.equal(keys.includes(sensitiveField), false, sensitiveField);
     }
+    assert.ok(body.inquiries[0].id);
   });
 
   await t.test("public listing seller DTO remains limited to safe display fields", async () => {
@@ -375,5 +375,197 @@ test("listing inquiry retrieval is authenticated, owner-only, and returns safe b
       "name",
       "verified",
     ]);
+  });
+});
+
+test("seller listing retrieval and buyer inquiry retrieval respect ownership and pagination", async (t) => {
+  const sellerA = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const sellerB = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const buyerA = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const buyerB = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+
+  const draft = await createListing(sellerA.user.id, ListingStatus.DRAFT);
+  const published = await createListing(sellerA.user.id, ListingStatus.PUBLISHED);
+  const reserved = await createListing(sellerA.user.id, ListingStatus.RESERVED);
+  const sold = await createListing(sellerA.user.id, ListingStatus.SOLD);
+  const suspended = await createListing(sellerA.user.id, ListingStatus.SUSPENDED);
+  const removed = await createListing(sellerA.user.id, ListingStatus.REMOVED);
+
+  await prisma.listingInquiry.create({
+    data: {
+      listingId: published.id,
+      buyerId: buyerA.user.id,
+      message: "Need to know if it is still available.",
+      status: "OPEN",
+    },
+  });
+
+  await prisma.listingInquiry.create({
+    data: {
+      listingId: sold.id,
+      buyerId: buyerA.user.id,
+      message: "Historical inquiry after sale.",
+      status: "CLOSED",
+    },
+  });
+
+  await t.test("seller listing retrieval is authenticated and scoped to request.user.id", async () => {
+    const unauthenticated = await app.inject({ method: "GET", url: "/api/v1/listings/me" });
+    assert.equal(unauthenticated.statusCode, 401);
+
+    const ownListings = await app.inject({
+      method: "GET",
+      url: "/api/v1/listings/me?page=1&pageSize=3",
+      headers: authHeaders(sellerA.sessionToken),
+    });
+    assert.equal(ownListings.statusCode, 200);
+    assert.equal(ownListings.json().meta.page, 1);
+    assert.equal(ownListings.json().meta.pageSize, 3);
+    assert.equal(ownListings.json().items.length, 3);
+    assert.equal(ownListings.json().items.every((item: { status: string }) => item.status), true);
+
+    const forbiddenQuery = await app.inject({
+      method: "GET",
+      url: `/api/v1/listings/me?sellerId=${sellerB.user.id}`,
+      headers: authHeaders(sellerA.sessionToken),
+    });
+    assert.equal(forbiddenQuery.statusCode, 422);
+    assert.equal(forbiddenQuery.json().error.code, "VALIDATION_ERROR");
+  });
+
+  await t.test("buyer inquiry retrieval is authenticated and scoped to request.user.id", async () => {
+    const unauthenticated = await app.inject({ method: "GET", url: "/api/v1/inquiries/me" });
+    assert.equal(unauthenticated.statusCode, 401);
+
+    const ownInquiries = await app.inject({
+      method: "GET",
+      url: "/api/v1/inquiries/me?page=1&pageSize=10",
+      headers: authHeaders(buyerA.sessionToken),
+    });
+    assert.equal(ownInquiries.statusCode, 200);
+    assert.equal(ownInquiries.json().inquiries.length, 2);
+    assert.equal(ownInquiries.json().meta.total, 2);
+    assert.ok(ownInquiries.json().inquiries.every((item: { listing: { id: string } }) => item.listing.id));
+
+    const queryOverride = await app.inject({
+      method: "GET",
+      url: `/api/v1/inquiries/me?buyerId=${buyerB.user.id}`,
+      headers: authHeaders(buyerA.sessionToken),
+    });
+    assert.equal(queryOverride.statusCode, 422);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/inquiries/me",
+      headers: authHeaders(buyerB.sessionToken),
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().inquiries.length, 0);
+  });
+});
+
+test("seller inquiry status transitions and lifecycle interactions are enforced", async (t) => {
+  const seller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const buyer = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const listing = await createListing(seller.user.id, ListingStatus.PUBLISHED);
+
+  const inquiry = await prisma.listingInquiry.create({
+    data: {
+      listingId: listing.id,
+      buyerId: buyer.user.id,
+      message: "Can you confirm availability?",
+      status: "OPEN",
+    },
+  });
+
+  await t.test("valid seller transitions succeed", async () => {
+    const responded = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/listings/${listing.id}/inquiries/${inquiry.id}`,
+      headers: authHeaders(seller.sessionToken),
+      payload: { status: "RESPONDED" },
+    });
+    assert.equal(responded.statusCode, 200);
+    assert.equal(responded.json().inquiry.status, "RESPONDED");
+
+    const closed = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/listings/${listing.id}/inquiries/${inquiry.id}`,
+      headers: authHeaders(seller.sessionToken),
+      payload: { status: "CLOSED" },
+    });
+    assert.equal(closed.statusCode, 200);
+    assert.equal(closed.json().inquiry.status, "CLOSED");
+  });
+
+  await t.test("illegal transitions are rejected", async () => {
+    const repeatedClosed = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/listings/${listing.id}/inquiries/${inquiry.id}`,
+      headers: authHeaders(seller.sessionToken),
+      payload: { status: "CLOSED" },
+    });
+    assert.equal(repeatedClosed.statusCode, 409);
+
+    const respondedInquiry = await prisma.listingInquiry.create({
+      data: {
+        listingId: listing.id,
+        buyerId: buyer.user.id,
+        message: "Another inquiry.",
+        status: "RESPONDED",
+      },
+    });
+
+    const reopened = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/listings/${listing.id}/inquiries/${respondedInquiry.id}`,
+      headers: authHeaders(seller.sessionToken),
+      payload: { status: "OPEN" },
+    });
+    assert.equal(reopened.statusCode, 422);
+
+    const invalidResponse = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/listings/${listing.id}/inquiries/${respondedInquiry.id}`,
+      headers: authHeaders(seller.sessionToken),
+      payload: { status: "RESPONDED" },
+    });
+    assert.equal(invalidResponse.statusCode, 409);
+  });
+
+  await t.test("listing lifecycle does not delete inquiry rows", async () => {
+    const lifecycleBuyer = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+    const lifecycleSeller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+    const lifecycleListing = await createListing(lifecycleSeller.user.id, ListingStatus.PUBLISHED);
+    const lifecycleInquiry = await prisma.listingInquiry.create({
+      data: {
+        listingId: lifecycleListing.id,
+        buyerId: lifecycleBuyer.user.id,
+        message: "Prior inquiry.",
+        status: "OPEN",
+      },
+    });
+
+    for (const nextStatus of [ListingStatus.RESERVED, ListingStatus.SOLD, ListingStatus.REMOVED]) {
+      await prisma.listing.update({
+        where: { id: lifecycleListing.id },
+        data: { status: nextStatus },
+      });
+      const buyerResponse = await app.inject({
+        method: "GET",
+        url: "/api/v1/inquiries/me",
+        headers: authHeaders(lifecycleBuyer.sessionToken),
+      });
+      assert.equal(buyerResponse.statusCode, 200);
+      assert.ok(buyerResponse.json().inquiries.some((inquiry: { id: string }) => inquiry.id === lifecycleInquiry.id));
+
+      const sellerResponse = await app.inject({
+        method: "GET",
+        url: `/api/v1/listings/${lifecycleListing.id}/inquiries`,
+        headers: authHeaders(lifecycleSeller.sessionToken),
+      });
+      assert.equal(sellerResponse.statusCode, 200);
+      assert.ok(sellerResponse.json().inquiries.some((inquiry: { id: string }) => inquiry.id === lifecycleInquiry.id));
+    }
   });
 });

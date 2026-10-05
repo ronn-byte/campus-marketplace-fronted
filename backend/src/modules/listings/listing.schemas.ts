@@ -26,6 +26,15 @@ export const createListingInquirySchema = z.object({
   message: z.string().trim().min(1).max(2000),
 }).strict();
 
+export const listingInquiryParamsSchema = z.object({
+  listingId: z.string().uuid(),
+  inquiryId: z.string().uuid(),
+}).strict();
+
+export const updateInquiryStatusSchema = z.object({
+  status: z.enum(["RESPONDED", "CLOSED"]),
+}).strict();
+
 export const updateListingSchema = createListingSchema
   .partial()
   .strict()
