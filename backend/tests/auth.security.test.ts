@@ -1,11 +1,55 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test, { before, after } from "node:test";
 import { AccountStatus, VerificationMethod } from "@prisma/client";
-import { prisma } from "../src/lib/prisma.js";
-import { authenticate, register, createSession, getSessionUser, revokeSession, changePassword } from "../src/modules/auth/auth.service.js";
-import { hashToken, createOpaqueToken } from "../src/modules/auth/auth.utils.js";
-import { AppError } from "../src/app/errors.js";
 
+process.env.NODE_ENV = "test";
+process.env.RESEND_API_KEY = "test-key";
+process.env.EMAIL_FROM = "noreply@campus-marketplace.test";
+process.env.APP_URL = "http://localhost:3000";
+process.env.CORS_ORIGIN = "http://localhost:5173";
+process.env.DATABASE_URL ??= "postgresql://postgres:postgres@localhost:5432/campus_marketplace_test";
+
+const sendCalls: Array<{ to: string; subject: string }> = [];
+const originalFetch = globalThis.fetch;
+const { resend } = await import("../src/lib/email.js");
+
+before(() => {
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ id: "mock-email-id" }),
+    text: async () => "ok",
+    headers: new Headers(),
+  }) as Response;
+
+  resend.emails.send = async (payload) => {
+    sendCalls.push({
+      to: Array.isArray(payload.to) ? payload.to[0] : payload.to,
+      subject: payload.subject,
+    });
+    return {
+      data: { id: "mock-email-id" },
+      error: null,
+    } as any;
+  };
+});
+
+after(() => {
+  globalThis.fetch = originalFetch;
+  sendCalls.length = 0;
+});
+
+const { prisma } = await import("../src/lib/prisma.js");
+const {
+  authenticate,
+  register,
+  createSession,
+  getSessionUser,
+  revokeSession,
+  changePassword,
+} = await import("../src/modules/auth/auth.service.js");
+const { hashToken, createOpaqueToken } = await import("../src/modules/auth/auth.utils.js");
+const { AppError } = await import("../src/app/errors.js");
 
 async function cleanupTestUser(email: string) {
   await prisma.$transaction([
@@ -78,8 +122,8 @@ test("Authentication: invalid credentials returns generic error", async (t) => {
     }
   });
 
-  await t.test("pending verification account returns generic error", async () => {
-    const email = "test-auth-pending@example.com";
+  await t.test("active account remains login-eligible while student verification is pending", async () => {
+    const email = "test-auth-manual-verification@example.com";
     await cleanupTestUser(email);
 
     await register({
@@ -90,23 +134,15 @@ test("Authentication: invalid credentials returns generic error", async (t) => {
       registrationNumber: "ABC123DEF457",
     });
 
-    // Do NOT approve - leave PENDING_VERIFICATION
-    try {
-      await authenticate({
-        email,
-        identifier: undefined,
-        password: "test-password-12345",
-      });
-      assert.fail("Should have thrown INVALID_CREDENTIALS");
-    } catch (error) {
-      if (error instanceof AppError) {
-        assert.equal(error.code, "INVALID_CREDENTIALS");
-      } else {
-        throw error;
-      }
-    } finally {
-      await cleanupTestUser(email);
-    }
+    const result = await authenticate({
+      email,
+      identifier: undefined,
+      password: "test-password-12345",
+    });
+
+    assert.equal(result.user.email, email);
+    assert.equal(result.user.accountStatus, AccountStatus.ACTIVE);
+    await cleanupTestUser(email);
   });
 
   await t.test("disabled account returns generic error", async () => {
@@ -330,7 +366,7 @@ test("DTO: toSafeUser does not expose sensitive fields", async () => {
   assert.equal(user.id, user.id);
   assert.equal(user.email, email);
   assert.equal(user.role, "STUDENT");
-  assert.equal(user.accountStatus, "PENDING_VERIFICATION");
+  assert.equal(user.accountStatus, "ACTIVE");
 
   await cleanupTestUser(email);
 });

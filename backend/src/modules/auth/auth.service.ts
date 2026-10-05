@@ -33,9 +33,16 @@ const GENERIC_AUTH_ERROR = new AppError(
   "Unable to sign in with those credentials.",
 );
 
-  export async function register(input: RegisterInput) {
+export async function register(input: RegisterInput) {
   const passwordHash = await hashPassword(input.password);
   const rawToken = createOpaqueToken();
+  const registrationNumber = input.registrationNumber?.trim();
+  const isManualStudentVerification =
+    input.verificationMethod === VerificationMethod.MANUAL_STUDENT &&
+    Boolean(registrationNumber);
+  const isUniversityEmailVerification =
+    input.verificationMethod === VerificationMethod.UNIVERSITY_EMAIL &&
+    Boolean(registrationNumber);
 
   try {
     const user = await prisma.$transaction(async (transaction) => {
@@ -47,13 +54,55 @@ const GENERIC_AUTH_ERROR = new AppError(
         },
       });
 
-      await transaction.studentProfile.create({
-        data: {
-          userId: created.id,
-          displayName: input.displayName,
-          verificationStatus: VerificationStatus.PENDING,
-        },
-      });
+      let studentProfile: { id: string } | undefined;
+
+      if (isManualStudentVerification && registrationNumber) {
+        studentProfile = await transaction.studentProfile.create({
+          data: {
+            userId: created.id,
+            displayName: input.displayName,
+            verificationStatus: VerificationStatus.PENDING,
+            registrationNumberHash: registrationNumberHash(registrationNumber),
+            registrationNumberCiphertext: encryptRegistrationNumber(registrationNumber),
+          },
+        });
+
+        await transaction.verification.create({
+          data: {
+            userId: created.id,
+            studentProfileId: studentProfile.id,
+            method: VerificationMethod.MANUAL_STUDENT,
+            status: VerificationStatus.PENDING,
+          },
+        });
+      } else if (isUniversityEmailVerification && registrationNumber) {
+        studentProfile = await transaction.studentProfile.create({
+          data: {
+            userId: created.id,
+            displayName: input.displayName,
+            verificationStatus: VerificationStatus.PENDING,
+            registrationNumberHash: registrationNumberHash(registrationNumber),
+            registrationNumberCiphertext: encryptRegistrationNumber(registrationNumber),
+          },
+        });
+
+        await transaction.verification.create({
+          data: {
+            userId: created.id,
+            studentProfileId: studentProfile.id,
+            method: VerificationMethod.UNIVERSITY_EMAIL,
+            status: VerificationStatus.PENDING,
+          },
+        });
+      } else {
+        studentProfile = await transaction.studentProfile.create({
+          data: {
+            userId: created.id,
+            displayName: input.displayName,
+            verificationStatus: VerificationStatus.PENDING,
+          },
+        });
+      }
 
       await transaction.emailVerificationToken.create({
         data: {
@@ -67,7 +116,7 @@ const GENERIC_AUTH_ERROR = new AppError(
     });
 
     // Email ownership verification is separate from student verification.
-    // The account remains usable while student verification is pending.
+    // Accounts remain usable while student verification is pending.
     await sendVerificationEmail(input.email, rawToken);
 
     return toSafeUser(user);
@@ -234,18 +283,6 @@ export async function verifyEmail(
       },
     }),
 
-    prisma.verification.updateMany({
-      where: {
-        userId: record.userId,
-        method: VerificationMethod.UNIVERSITY_EMAIL,
-        status: VerificationStatus.PENDING,
-      },
-      data: {
-        status: VerificationStatus.APPROVED,
-        reviewedAt: new Date(),
-        reason: "Email ownership verified.",
-      },
-    }),
   ]);
 }
 
@@ -259,7 +296,8 @@ export async function resendVerification(
   if (
     !user ||
     user.emailVerifiedAt ||
-    user.accountStatus !== AccountStatus.PENDING_VERIFICATION
+    user.accountStatus === AccountStatus.DISABLED ||
+    user.accountStatus === AccountStatus.SUSPENDED
   ) {
     return;
   }

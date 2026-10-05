@@ -8,14 +8,34 @@ const email = z
   .transform((value) => value.toLowerCase());
 
 const password = z.string().min(12).max(128);
+const verificationMethod = z.enum(["UNIVERSITY_EMAIL", "MANUAL_STUDENT"]).optional();
+const registrationNumber = z
+  .string()
+  .trim()
+  .min(4)
+  .max(40)
+  .regex(/^[A-Za-z0-9/\-]+$/)
+  .optional();
 
 export const registerSchema = z
   .object({
     email,
     password,
     displayName: z.string().trim().min(1).max(80),
+    verificationMethod,
+    registrationNumber,
   })
-  .strict();
+  .strict()
+  .refine((value) => {
+    if (value.verificationMethod !== "MANUAL_STUDENT") {
+      return true;
+    }
+
+    return Boolean(value.registrationNumber && value.registrationNumber.length >= 4);
+  }, {
+    message: "Registration number is required for manual student verification.",
+    path: ["registrationNumber"],
+  });
 
 export const loginSchema = z
   .object({

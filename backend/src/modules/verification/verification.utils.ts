@@ -11,7 +11,24 @@ function encryptionKey(): Buffer {
 }
 
 export function normalizeRegistrationNumber(value: string): string {
-  return value.trim().toUpperCase().replace(/\s+/g, "");
+  return value.trim().toUpperCase().replace(/[\s/\\-]+/g, "");
+}
+
+export function expectedMutStudentEmail(registrationNumber: string): string {
+  const normalized = normalizeRegistrationNumber(registrationNumber).replace(/[^A-Z0-9]/g, "").toLowerCase();
+  return `${normalized}@student.mut.ac.ke`;
+}
+
+export function isExpectedMutStudentEmail(registrationNumber: string, email: string): boolean {
+  const normalizedRegistrationNumber = normalizeRegistrationNumber(registrationNumber).replace(/[^A-Z0-9]/g, "").toLowerCase();
+  const normalizedEmail = email.trim().toLowerCase();
+  const [localPart, domain] = normalizedEmail.split("@");
+
+  return Boolean(
+    normalizedRegistrationNumber &&
+    localPart === normalizedRegistrationNumber &&
+    domain === "student.mut.ac.ke",
+  );
 }
 
 export function registrationNumberHash(value: string): string {

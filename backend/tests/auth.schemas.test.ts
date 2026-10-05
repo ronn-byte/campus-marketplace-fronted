@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { loginSchema, registerSchema } from "../src/modules/auth/auth.schemas.js";
 
-test("authentication schemas normalize email and reject weak passwords", () => {
+test("authentication schemas normalize email and accept optional student verification data", () => {
   const result = registerSchema.safeParse({ 
     email: " Student@Example.com ", 
     password: "short",
@@ -19,6 +19,8 @@ test("authentication schemas normalize email and reject weak passwords", () => {
     registrationNumber: "ABC123",
   });
   assert.equal(valid.email, "student@example.com");
+  assert.equal(valid.verificationMethod, "MANUAL_STUDENT");
+  assert.equal(valid.registrationNumber, "ABC123");
 });
 
 test("login accepts the current frontend identifier field without changing the API identity", () => {

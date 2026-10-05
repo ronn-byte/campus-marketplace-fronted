@@ -1,6 +1,7 @@
 import { ListingCondition, ListingStatus } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 import { prisma } from "../../lib/prisma.js";
+import { assertSellerAuthorized } from "../verification/verification.service.js";
 
 type CreateListingInput = {
   categoryId: string;
@@ -15,6 +16,8 @@ export async function createListing(
   sellerId: string,
   input: CreateListingInput,
 ) {
+  await assertSellerAuthorized(sellerId);
+
   const category = await prisma.category.findUnique({
     where: { id: input.categoryId },
     select: { id: true, isActive: true },
@@ -58,6 +61,8 @@ type PublishListingInput = {
 };
 
 export async function publishListing(input: PublishListingInput) {
+  await assertSellerAuthorized(input.sellerId);
+
   const listing = await prisma.listing.findUnique({
     where: {
       id: input.listingId,
