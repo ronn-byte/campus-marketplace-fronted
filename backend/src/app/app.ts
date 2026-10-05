@@ -11,6 +11,7 @@ import multipart from "@fastify/multipart";
 import { env } from "../config/env.js";
 import { AppError, errorPayload, getErrorMessage, isHttpError } from "./errors.js";
 import { registerAuthRoutes } from "../modules/auth/auth.routes.js";
+import { registerProfileRoutes } from "../modules/profile/profile.routes.js";
 import { registerVerificationRoutes } from "../modules/verification/verification.routes.js";
 import {
   MAX_LISTING_IMAGE_BYTES,
@@ -78,6 +79,7 @@ export function buildApp(): FastifyInstance {
   app.register(async (api) => {
     api.get("/health", async () => ({ status: "ok" }));
     await registerAuthRoutes(api);
+    await registerProfileRoutes(api);
     await registerListingRoutes(api);
     await registerVerificationRoutes(api);
   }, { prefix: "/api/v1" });

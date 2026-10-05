@@ -22,6 +22,7 @@ model User {
   listings               Listing[]
   passwordResetTokens    PasswordResetToken[]
   sessions               Session[]
+  profile                Profile?
   studentProfile         StudentProfile?
   verificationsReviewed  Verification[]           @relation("VerificationReviewer")
   verificationsSubmitted Verification[]           @relation("VerificationSubject")
@@ -29,6 +30,22 @@ model User {
   @@index([accountStatus])
   @@index([role, accountStatus])
   @@map("users")
+}
+
+model Profile {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @unique @db.Uuid
+  nickname    String?  @db.VarChar(60)
+  phoneNumber String?  @db.VarChar(25)
+  yearOfStudy Int?
+  course      String?  @db.VarChar(120)
+  bio         String?  @db.VarChar(500)
+  avatarUrl   String?  @db.VarChar(500)
+  createdAt   DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt   DateTime @updatedAt @db.Timestamptz(3)
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("profiles")
 }
 
 model StudentProfile {

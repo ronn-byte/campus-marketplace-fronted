@@ -58,6 +58,27 @@ npm run prisma:migrate
 
 `prisma:migrate` creates the named development migration. It does not reset or delete an existing database.
 
+### Isolated test database
+
+Database-backed tests require `TEST_DATABASE_URL`; they do not fall back to `DATABASE_URL`. Configure it in the ignored `backend/.env` file or in the process environment, and point it to a dedicated database other than `campus_marketplace_dev`. The test setup rejects that development database name before connecting.
+
+Create the dedicated database manually on the Azure PostgreSQL server. For an Azure Database for PostgreSQL Flexible Server, for example:
+
+```powershell
+az postgres flexible-server db create --resource-group "<RESOURCE_GROUP>" --server-name "<SERVER_NAME>" --database-name "campus_marketplace_test"
+```
+
+Replace the placeholders with the existing server's resource group and server name. Configure `TEST_DATABASE_URL` with the test database name and the same required TLS/connection options as your Azure PostgreSQL setup. The database user must be able to create the schema objects and Prisma migration table. No database is created or changed automatically by the test setup.
+
+From `backend/`, apply the checked-in migrations to the isolated test database, then run the profile test:
+
+```powershell
+npm run prisma:migrate:test
+npx tsx --test tests/profile.test.ts
+```
+
+The migration command requires `TEST_DATABASE_URL`, overrides `DATABASE_URL` only for its Prisma child process, and uses `prisma migrate deploy` (it does not create a new migration or reset data). All database-backed tests use this same explicit test database configuration.
+
 ## API
 
 Process health:

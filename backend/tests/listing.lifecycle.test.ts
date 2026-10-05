@@ -7,12 +7,12 @@ import {
   VerificationStatus,
 } from "@prisma/client";
 
-process.env.NODE_ENV = "test";
+import "../scripts/test-database.js";
+
 process.env.RESEND_API_KEY ??= "test-key";
 process.env.EMAIL_FROM ??= "noreply@campus-marketplace.test";
 process.env.APP_URL ??= "http://localhost:3000";
 process.env.CORS_ORIGIN ??= "http://localhost:5173";
-process.env.DATABASE_URL ??= "postgresql://localhost:5432/campus_marketplace_test";
 process.env.STUDENT_DATA_ENCRYPTION_KEY ??= Buffer.alloc(32).toString("base64");
 
 const { prisma } = await import("../src/lib/prisma.js");

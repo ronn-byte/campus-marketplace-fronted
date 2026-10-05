@@ -12,6 +12,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev --name foundation",
+    "prisma:migrate:test": "tsx scripts/migrate-test-db.ts",
     "prisma:validate": "prisma validate",
     "prisma:seed": "tsx prisma/seed.ts"
   },

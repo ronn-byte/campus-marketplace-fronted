@@ -1,8 +1,47 @@
-import { Link, NavLink } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import apiClient from "../services/apiClient";
 
 export default function Navbar() {
-  const { isAuthenticated } = useAuth();
+  const navigate = useNavigate();
+  const { isAuthenticated, user, setUser } = useAuth();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef(null);
+
+  useEffect(() => {
+    const handleDocumentClick = (event) => {
+      if (!menuRef.current) return;
+      if (!menuRef.current.contains(event.target)) {
+        setMenuOpen(false);
+      }
+    };
+
+    document.addEventListener("mousedown", handleDocumentClick);
+    return () => document.removeEventListener("mousedown", handleDocumentClick);
+  }, []);
+
+  const initials = useMemo(() => {
+    const source = user?.email?.trim() || "MU";
+    return source
+      .split("@")[0]
+      .split(/[^a-zA-Z0-9]+/)
+      .filter(Boolean)
+      .map((part) => part[0])
+      .join("")
+      .slice(0, 2)
+      .toUpperCase() || "MU";
+  }, [user]);
+
+  const handleLogout = async () => {
+    try {
+      await apiClient.post("/auth/logout");
+    } finally {
+      setUser(null);
+      setMenuOpen(false);
+      navigate("/");
+    }
+  };
 
   return (
     <nav className="site-nav" aria-label="Main navigation">
@@ -24,6 +63,24 @@ export default function Navbar() {
             <Link to="/login" className="nav-link">Log in</Link>
             <Link to="/register" className="button button--small">Join MUT Market</Link>
           </>}
+
+          {isAuthenticated && (
+            <div className="profile-menu" ref={menuRef}>
+              <button type="button" className="profile-menu__trigger" onClick={() => setMenuOpen((open) => !open)} aria-label="Open profile menu" aria-expanded={menuOpen}>
+                <span className="avatar">{initials}</span>
+              </button>
+
+              {menuOpen && (
+                <div className="profile-menu__panel" role="menu">
+                  <Link to="/profile" className="profile-menu__item" onClick={() => setMenuOpen(false)}>My Profile</Link>
+                  <Link to="/my-listings" className="profile-menu__item" onClick={() => setMenuOpen(false)}>My Listings</Link>
+                  <Link to="/my-inquiries" className="profile-menu__item" onClick={() => setMenuOpen(false)}>My Inquiries</Link>
+                  <Link to="/profile" className="profile-menu__item" onClick={() => setMenuOpen(false)}>Settings</Link>
+                  <button type="button" className="profile-menu__action" onClick={handleLogout}>Log out</button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </nav>
