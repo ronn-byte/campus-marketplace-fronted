@@ -18,7 +18,10 @@ import {
   getListingInquiries,
   getPublicListing,
   getPublishedListings,
+  markListingSold,
   publishListing,
+  releaseListingReservation,
+  reserveListing,
   removeListing,
   updateListing,
 } from "./listing.service.js";
@@ -253,6 +256,78 @@ export async function registerListingRoutes(app: FastifyInstance) {
       return reply.status(200).send({
         listing,
       });
+    },
+  );
+
+  app.post(
+    "/listings/:listingId/reserve",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+      }
+
+      const user = request.user;
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const listing = await reserveListing(params.data.listingId, user.id);
+      return reply.status(200).send({ listing });
+    },
+  );
+
+  app.post(
+    "/listings/:listingId/sold",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+      }
+
+      const user = request.user;
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const listing = await markListingSold(params.data.listingId, user.id);
+      return reply.status(200).send({ listing });
+    },
+  );
+
+  app.post(
+    "/listings/:listingId/release-reservation",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+      }
+
+      const user = request.user;
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const listing = await releaseListingReservation(
+        params.data.listingId,
+        user.id,
+      );
+      return reply.status(200).send({ listing });
     },
   );
 

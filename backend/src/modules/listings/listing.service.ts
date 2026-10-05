@@ -293,6 +293,114 @@ export async function publishListing(input: PublishListingInput) {
   return publishedListing;
 }
 
+async function transitionListing(
+  listingId: string,
+  sellerId: string,
+  currentStatuses: ListingStatus[],
+  nextStatus: ListingStatus,
+) {
+  await assertSellerAuthorized(sellerId);
+
+  return prisma.$transaction(async (transaction) => {
+    const existing = await transaction.listing.findUnique({
+      where: { id: listingId },
+      select: { id: true, sellerId: true, status: true },
+    });
+
+    if (!existing) {
+      throw new AppError(404, "LISTING_NOT_FOUND", "Listing not found.");
+    }
+
+    if (existing.sellerId !== sellerId) {
+      throw new AppError(
+        403,
+        "FORBIDDEN",
+        "You do not have permission to update this listing.",
+      );
+    }
+
+    if (!currentStatuses.includes(existing.status)) {
+      throw new AppError(
+        409,
+        "INVALID_LISTING_STATUS",
+        `This listing cannot transition from ${existing.status} to ${nextStatus}.`,
+      );
+    }
+
+    const result = await transaction.listing.updateMany({
+      where: {
+        id: listingId,
+        sellerId,
+        status: { in: currentStatuses },
+      },
+      data: {
+        status: nextStatus,
+        ...(nextStatus === ListingStatus.SOLD ? { soldAt: new Date() } : {}),
+      },
+    });
+
+    if (result.count !== 1) {
+      throw new AppError(
+        409,
+        "INVALID_LISTING_STATUS",
+        "The listing status has changed. Please try again.",
+      );
+    }
+
+    return transaction.listing.findUniqueOrThrow({
+      where: { id: listingId },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        price: true,
+        condition: true,
+        location: true,
+        status: true,
+        createdAt: true,
+        publishedAt: true,
+        category: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
+        },
+      },
+    });
+  });
+}
+
+export async function reserveListing(listingId: string, sellerId: string) {
+  return transitionListing(
+    listingId,
+    sellerId,
+    [ListingStatus.PUBLISHED],
+    ListingStatus.RESERVED,
+  );
+}
+
+export async function markListingSold(listingId: string, sellerId: string) {
+  return transitionListing(
+    listingId,
+    sellerId,
+    [ListingStatus.PUBLISHED, ListingStatus.RESERVED],
+    ListingStatus.SOLD,
+  );
+}
+
+export async function releaseListingReservation(
+  listingId: string,
+  sellerId: string,
+) {
+  return transitionListing(
+    listingId,
+    sellerId,
+    [ListingStatus.RESERVED],
+    ListingStatus.PUBLISHED,
+  );
+}
+
 type ListPublishedListingsInput = {
   page: number;
   pageSize: number;
@@ -668,6 +776,31 @@ export async function removeListing(listingId: string, sellerId: string) {
     );
   }
 
+  if (existing.status === ListingStatus.SOLD) {
+    throw new AppError(
+      409,
+      "INVALID_LISTING_STATUS",
+      "A sold listing cannot be removed.",
+    );
+  }
+
+  const result = await prisma.listing.updateMany({
+    where: {
+      id: existing.id,
+      sellerId,
+      status: { notIn: [ListingStatus.SOLD, ListingStatus.REMOVED] },
+    },
+    data: { status: ListingStatus.REMOVED },
+  });
+
+  if (result.count !== 1) {
+    throw new AppError(
+      409,
+      "INVALID_LISTING_STATUS",
+      "The listing status has changed. Please try again.",
+    );
+  }
+
   const listingImages = await prisma.listingImage.findMany({
     where: { listingId: existing.id },
     select: { objectKey: true },
@@ -675,9 +808,8 @@ export async function removeListing(listingId: string, sellerId: string) {
 
   await deleteListingImageFiles(listingImages.map((image) => image.objectKey));
 
-  return prisma.listing.update({
+  return prisma.listing.findUniqueOrThrow({
     where: { id: existing.id },
-    data: { status: ListingStatus.REMOVED },
     select: {
       id: true,
       status: true,
