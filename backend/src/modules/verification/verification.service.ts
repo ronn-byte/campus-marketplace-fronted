@@ -35,19 +35,24 @@ export async function getUserVerificationState(userId: string) {
     orderBy: { createdAt: "desc" },
     select: {
       method: true,
+      status: true,
     },
   });
 
-  const status = studentProfile?.verificationStatus ?? VerificationStatus.PENDING;
+  const status = mostRecentVerification
+    ? studentProfile?.verificationStatus ?? mostRecentVerification.status
+    : (studentProfile?.verificationStatus === VerificationStatus.APPROVED
+    ? VerificationStatus.APPROVED
+    : null);
   const maySell = Boolean(
     studentProfile &&
     studentProfile.user.role === Role.STUDENT &&
     studentProfile.user.accountStatus === AccountStatus.ACTIVE &&
-    status === VerificationStatus.APPROVED,
+    studentProfile.verificationStatus === VerificationStatus.APPROVED,
   );
 
   return {
-    verified: Boolean(studentProfile && status === VerificationStatus.APPROVED),
+    verified: Boolean(studentProfile && studentProfile.verificationStatus === VerificationStatus.APPROVED),
     status,
     method: mostRecentVerification?.method ?? null,
     maySell,
@@ -132,6 +137,18 @@ export async function reviewManualVerification(verificationId: string, reviewerI
 }
 
 export async function submitVerification(userId: string, input: VerificationSubmissionInput) {
+  const existingVerification = await prisma.verification.findFirst({
+    where: { userId },
+    orderBy: { createdAt: "desc" },
+    select: { status: true },
+  });
+  if (existingVerification?.status === VerificationStatus.PENDING) {
+    throw new AppError(409, "VERIFICATION_PENDING", "Your student verification is already being reviewed.");
+  }
+  if (existingVerification?.status === VerificationStatus.APPROVED) {
+    throw new AppError(409, "VERIFICATION_ALREADY_APPROVED", "Your student account is already verified.");
+  }
+
   const registrationNumber = normalizeRegistrationNumber(input.registrationNumber);
   if (!registrationNumber || registrationNumber.length < 4) {
     throw new AppError(422, "VALIDATION_ERROR", "A valid registration number is required.");
