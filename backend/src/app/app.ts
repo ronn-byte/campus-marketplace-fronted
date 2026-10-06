@@ -21,21 +21,29 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const frontendDistPath = path.resolve(__dirname, "../../../dist");
+const backendRootPath = path.resolve(__dirname, "../..");
+const frontendDistPath = path.resolve(backendRootPath, "../dist");
 const uploadRoot = path.resolve(process.cwd(), env.UPLOAD_ROOT);
 fs.mkdirSync(uploadRoot, { recursive: true });
 
 export function buildApp(): FastifyInstance {
+  const hasFrontendBuild = fs.existsSync(path.join(frontendDistPath, "index.html"));
+  if (env.NODE_ENV === "production" && !hasFrontendBuild) {
+    throw new Error(`Frontend build not found at ${frontendDistPath}. Run the root production build first.`);
+  }
+
   const app = Fastify({
     logger: env.NODE_ENV !== "test",
     bodyLimit: 10 * 1024 * 1024,
     requestIdHeader: "x-request-id",
   });
 
-  app.register(fastifyStatic, {
-    root: frontendDistPath,
-    prefix: "/",
-  });
+  if (hasFrontendBuild) {
+    app.register(fastifyStatic, {
+      root: frontendDistPath,
+      prefix: "/",
+    });
+  }
 
   app.register(fastifyStatic, {
     root: uploadRoot,
@@ -85,7 +93,26 @@ export function buildApp(): FastifyInstance {
   }, { prefix: "/api/v1" });
 
   app.setNotFoundHandler(async (request, reply) => {
-    if (request.raw.url?.startsWith("/api/")) {
+    const requestPath = request.url.split("?")[0] ?? request.url;
+    if (requestPath === "/api" || requestPath.startsWith("/api/")) {
+      return reply.status(404).send({
+        error: {
+          code: "NOT_FOUND",
+          message: "Route not found.",
+        },
+      });
+    }
+
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return reply.status(404).send({
+        error: {
+          code: "NOT_FOUND",
+          message: "Route not found.",
+        },
+      });
+    }
+
+    if (!hasFrontendBuild) {
       return reply.status(404).send({
         error: {
           code: "NOT_FOUND",

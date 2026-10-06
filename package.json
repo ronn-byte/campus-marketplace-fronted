@@ -3,9 +3,15 @@
   "private": true,
   "version": "0.0.0",
   "type": "module",
+  "workspaces": [
+    "backend"
+  ],
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
+    "dev": "node scripts/dev.js",
+    "build": "npm run build:frontend && npm run build:backend",
+    "build:frontend": "vite build",
+    "build:backend": "npm run build --prefix backend",
+    "start": "npm run start --prefix backend",
     "lint": "eslint .",
     "preview": "vite preview"
   },

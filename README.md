@@ -1,12 +1,54 @@
-# React + Vite
+# MUT Market
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+MUT Market is a React application served by a Fastify API. Vite provides the frontend development server; in production, Fastify serves the built frontend and API from the same origin.
 
-Currently, two official plugins are available:
+## Setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Install dependencies from the repository root:
 
-## Expanding the ESLint configuration
+```sh
+npm install
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Configure the existing backend environment in `backend/.env` using `backend/.env.example`, then generate the Prisma client:
+
+```sh
+npm run prisma:generate --prefix backend
+```
+
+The backend requires its existing environment settings and database configuration. See [backend/README.md](./backend/README.md) for details.
+
+## Development
+
+From the repository root:
+
+```sh
+npm run dev
+```
+
+This starts Vite with React hot reload and the Fastify backend together. Vite proxies `/api/v1` to Fastify at `http://localhost:5000`; set `BACKEND_URL` if the backend listens elsewhere. Browser requests use the same-origin `/api/v1` path, and `VITE_API_URL` can optionally set the development proxy target when `BACKEND_URL` is not set.
+
+## Production
+
+Build the frontend and backend from the repository root:
+
+```sh
+npm run build
+```
+
+The frontend is written to the root `dist/` directory; backend JavaScript is written to `backend/dist/`. Start the production Fastify server with:
+
+```sh
+npm start
+```
+
+Fastify serves frontend assets and React Router routes from `dist/`, while API routes remain under `/api/v1`.
+
+## Validation
+
+Backend commands are available from the root with npm's `--prefix backend` option, for example:
+
+```sh
+npm run typecheck --prefix backend
+npm test --prefix backend
+```
