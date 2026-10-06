@@ -38,6 +38,8 @@ export async function registerListingRoutes(app: FastifyInstance) {
   });
 
   app.get("/listings", async (request, reply) => {
+    console.log("LISTINGS QUERY DEBUG:", request.query);
+    
     const result = listListingsQuerySchema.safeParse(request.query);
 
     if (!result.success) {
