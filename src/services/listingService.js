@@ -39,7 +39,9 @@ export const previewListings = [
 const listingImageFallback = "https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=900&q=80";
 
 export async function getListings(params = {}) {
-  const { data } = await apiClient.get("/listings", { params });
+  const { data } = await apiClient.get("/listings", {
+    params: { page: 1, pageSize: 20, ...params },
+  });
   const items = Array.isArray(data?.items)
     ? data.items
     : Array.isArray(data?.listings)

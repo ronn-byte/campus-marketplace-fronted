@@ -50,7 +50,7 @@ function Home() {
           <div><p className="eyebrow">Fresh around MUT</p><h2 id="listings-heading">Recent listings</h2></div>
           <span className="muted">{visibleItems.length} items</span>
         </div>
-        {isPreview && <p className="preview-note">The marketplace API is not connected yet, so you are viewing temporary preview listings. These are not real inventory.</p>}
+        {isPreview && <p className="preview-note">We could not load current listings, so you are viewing temporary preview listings. These are not real inventory.</p>}
         {visibleItems.length > 0 ? <div className="listing-grid">{visibleItems.map((item) => <ListingCard key={item.id} listing={item} />)}</div> : <p className="muted">No listings in this category yet.</p>}
       </section>
     </div>
