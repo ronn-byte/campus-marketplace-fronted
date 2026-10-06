@@ -404,7 +404,6 @@ export async function releaseListingReservation(
     ListingStatus.PUBLISHED,
   );
 }
-
 type ListPublishedListingsInput = {
   page: number;
   pageSize: number;
@@ -415,70 +414,74 @@ export async function getPublishedListings(
 ) {
   const skip = (input.page - 1) * input.pageSize;
 
-  const [listings, total] = await prisma.$transaction([
-    prisma.listing.findMany({
-      where: {
-        status: ListingStatus.PUBLISHED,
-      },
-      orderBy: {
-        createdAt: "desc",
-      },
-      skip,
-      take: input.pageSize,
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        price: true,
-        condition: true,
-        location: true,
-        status: true,
-        createdAt: true,
-        publishedAt: true,
-        category: {
-          select: {
-            id: true,
-            name: true,
-            slug: true,
+  try {
+    const [listings, total] = await prisma.$transaction([
+      prisma.listing.findMany({
+        where: {
+          status: ListingStatus.PUBLISHED,
+        },
+        orderBy: {
+          createdAt: "desc",
+        },
+        skip,
+        take: input.pageSize,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          price: true,
+          condition: true,
+          location: true,
+          status: true,
+          createdAt: true,
+          publishedAt: true,
+          category: {
+            select: {
+              id: true,
+              name: true,
+              slug: true,
+            },
+          },
+          images: {
+            where: {
+              processingStatus: "READY",
+            },
+            orderBy: {
+              sortOrder: "asc",
+            },
+            select: {
+              id: true,
+              objectKey: true,
+              sortOrder: true,
+            },
           },
         },
-        images: {
-          where: {
-            processingStatus: "READY",
-          },
-          orderBy: {
-            sortOrder: "asc",
-          },
-          select: {
-            id: true,
-            objectKey: true,
-            sortOrder: true,
-          },
+      }),
+
+      prisma.listing.count({
+        where: {
+          status: ListingStatus.PUBLISHED,
         },
-      },
-    }),
+      }),
+    ]);
 
-    prisma.listing.count({
-      where: {
-        status: ListingStatus.PUBLISHED,
+    return {
+      listings: listings.map((listing) => ({
+        ...listing,
+        images: withImageUrls(listing.images),
+      })),
+      meta: {
+        page: input.page,
+        pageSize: input.pageSize,
+        total,
+        totalPages: Math.ceil(total / input.pageSize),
       },
-    }),
-  ]);
-
-  return {
-    listings: listings.map((listing) => ({
-      ...listing,
-      images: withImageUrls(listing.images),
-    })),
-    meta: {
-      page: input.page,
-      pageSize: input.pageSize,
-      total,
-      totalPages: Math.ceil(total / input.pageSize),
-    },
-  };
+    };
+  } catch (error) {
+    console.error("GET PUBLISHED LISTINGS ERROR:", error);
+    throw error;
+  }
 }
-
 export async function getPublicListing(listingId: string) {
   const listing = await prisma.listing.findFirst({
     where: {
