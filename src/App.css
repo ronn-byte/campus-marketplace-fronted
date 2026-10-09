@@ -36,3 +36,168 @@
     transform: rotate(360deg);
   }
 }
+
+
+```css
+/* ===== MUT Market: Password Reset ===== */
+
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.password-input-wrap input {
+  box-sizing: border-box;
+  width: 100%;
+  padding-right: 3rem;
+}
+
+.password-visibility {
+  position: absolute;
+  right: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.75;
+}
+
+.password-visibility:hover {
+  opacity: 1;
+}
+
+.password-visibility:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  border-radius: 5px;
+}
+
+.password-visibility svg,
+.reset-status__icon svg,
+.reset-success__icon svg {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.password-visibility:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.reset-button-loading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+}
+
+.reset-spinner {
+  display: inline-block;
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: reset-spin 0.7s linear infinite;
+}
+
+@keyframes reset-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Error feedback */
+.reset-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.65rem;
+  padding: 0.9rem 1rem;
+  margin-bottom: 1rem;
+  border: 1px solid #dc6464;
+  border-radius: 10px;
+  color: #b42318;
+  background: #fff1f0;
+}
+
+.reset-status__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+/* Success feedback */
+.reset-success {
+  text-align: center;
+  padding: 1.5rem 1rem;
+  margin: 1rem 0;
+  border: 1px solid #86d6a1;
+  border-radius: 12px;
+  background: #effbf3;
+  color: #176b38;
+  animation: reset-appear 0.25s ease-out;
+}
+
+.reset-success__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 3.25rem;
+  height: 3.25rem;
+  margin-bottom: 0.75rem;
+  border-radius: 50%;
+  background: #d6f5df;
+}
+
+.reset-success__icon svg {
+  width: 30px;
+  height: 30px;
+}
+
+.reset-success h3 {
+  margin: 0 0 0.5rem;
+}
+
+.reset-success p {
+  margin: 0.5rem 0;
+}
+
+.reset-redirect {
+  font-size: 0.9rem;
+  opacity: 0.8;
+}
+
+@keyframes reset-appear {
+  from {
+    opacity: 0;
+    transform: translateY(5px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reset-spinner {
+    animation-duration: 1.5s;
+  }
+
+  .reset-success {
+    animation: none;
+  }
+}
