@@ -105,14 +105,29 @@
 
 .reset-spinner {
   display: inline-block;
-  width: 1rem;
-  height: 1rem;
-  flex-shrink: 0;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  box-sizing: border-box;
   border: 2px solid currentColor;
-  border-right-color: transparent;
+  border-top-color: transparent;
   border-radius: 50%;
-  animation: reset-spin 0.7s linear infinite;
+  animation: mutmarket-spinner-rotation 0.7s linear infinite;
+  transform-origin: center;
+  will-change: transform;
 }
+
+@keyframes mutmarket-spinner-rotation {
+  from {
+    transform: rotate(0deg);
+  }
+
+  to {
+    transform: rotate(360deg);
+  }
+}
+```
+
 
 @keyframes reset-spin {
   to {
