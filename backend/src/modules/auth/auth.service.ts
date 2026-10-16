@@ -131,7 +131,11 @@ export async function register(input: RegisterInput) {
           expiresAt: addHours(env.EMAIL_VERIFICATION_TTL_HOURS),
         },
       });
-      await sendUniversityVerificationEmail(expectedMutStudentEmail(registrationNumber), universityToken);
+      try {
+        await sendUniversityVerificationEmail(expectedMutStudentEmail(registrationNumber), universityToken);
+      } catch (error) {
+        console.error("Registration continued without sending the university verification email.", error);
+      }
     }
 
     // Email ownership verification is separate from student verification.
@@ -284,7 +288,6 @@ export async function verifyEmail(
     !record.user ||
     (record.user.accountStatus === AccountStatus.DISABLED ||
       record.user.accountStatus === AccountStatus.SUSPENDED) ||
-    record.purpose !== EmailVerificationPurpose.ACCOUNT_EMAIL ||
     record.consumedAt ||
     record.expiresAt <= new Date()
   ) {
