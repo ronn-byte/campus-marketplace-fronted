@@ -276,6 +276,8 @@ export async function revokeSession(
 export async function verifyEmail(
   token: string,
 ): Promise<void> {
+  const now = new Date();
+
   const record = await prisma.emailVerificationToken.findUnique({
     where: {
       tokenHash: hashToken(token),
@@ -285,11 +287,12 @@ export async function verifyEmail(
 
   if (
     !record ||
+    record.purpose !== EmailVerificationPurpose.ACCOUNT_EMAIL ||
     !record.user ||
-    (record.user.accountStatus === AccountStatus.DISABLED ||
-      record.user.accountStatus === AccountStatus.SUSPENDED) ||
+    record.user.accountStatus === AccountStatus.DISABLED ||
+    record.user.accountStatus === AccountStatus.SUSPENDED ||
     record.consumedAt ||
-    record.expiresAt <= new Date()
+    record.expiresAt <= now
   ) {
     throw new AppError(
       400,
@@ -298,23 +301,53 @@ export async function verifyEmail(
     );
   }
 
-  await prisma.$transaction([
-    prisma.emailVerificationToken.update({
-      where: { id: record.id },
-      data: {
-        consumedAt: new Date(),
+  await prisma.$transaction(async (transaction) => {
+    // Consume only an unexpired account-email token, exactly once.
+    const consumed = await transaction.emailVerificationToken.updateMany({
+      where: {
+        id: record.id,
+        purpose: EmailVerificationPurpose.ACCOUNT_EMAIL,
+        consumedAt: null,
+        expiresAt: { gt: now },
       },
-    }),
-
-    prisma.user.update({
-      where: { id: record.userId },
       data: {
-        emailVerifiedAt: new Date(),
+        consumedAt: now,
+      },
+    });
+
+    if (consumed.count !== 1) {
+      throw new AppError(
+        400,
+        "INVALID_VERIFICATION_TOKEN",
+        "The verification link is invalid or expired.",
+      );
+    }
+
+    // Do not activate an account that became disabled or suspended.
+    const updatedUser = await transaction.user.updateMany({
+      where: {
+        id: record.userId,
+        accountStatus: {
+          notIn: [
+            AccountStatus.DISABLED,
+            AccountStatus.SUSPENDED,
+          ],
+        },
+      },
+      data: {
+        emailVerifiedAt: now,
         accountStatus: AccountStatus.ACTIVE,
       },
-    }),
+    });
 
-  ]);
+    if (updatedUser.count !== 1) {
+      throw new AppError(
+        400,
+        "INVALID_VERIFICATION_TOKEN",
+        "The verification link is invalid or expired.",
+      );
+    }
+  });
 }
 
 export async function resendVerification(

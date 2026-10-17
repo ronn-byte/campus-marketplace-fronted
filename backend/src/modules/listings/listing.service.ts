@@ -1,3 +1,6 @@
+import sharp from "sharp";
+import type { Metadata } from "sharp";
+
 import {
   ListingCondition,
   ListingInquiryStatus,
@@ -29,6 +32,113 @@ type CreateListingInput = {
   condition: ListingCondition;
   location: string;
 };
+
+type ListPublishedListingsInput = {
+  page: number;
+  pageSize: number;
+};
+
+type PublishListingInput = {
+  listingId: string;
+  sellerId: string;
+};
+
+type UpdateListingInput = {
+  [Key in keyof CreateListingInput]?: CreateListingInput[Key] | undefined;
+};
+
+async function normalizeListingImage(
+  buffer: Buffer,
+  declaredMimeType: string,
+): Promise<Buffer> {
+  const maxPixels = 40_000_000;
+
+  let metadata: Metadata;
+
+  try {
+    metadata = await sharp(buffer, {
+      limitInputPixels: maxPixels,
+      failOn: "error",
+    }).metadata();
+  } catch {
+    throw new AppError(
+      422,
+      "INVALID_IMAGE_CONTENT",
+      "The uploaded file is not a valid, readable image.",
+    );
+  }
+
+  let actualMimeType: string | undefined;
+
+  switch (metadata.format) {
+    case "jpeg":
+      actualMimeType = "image/jpeg";
+      break;
+    case "png":
+      actualMimeType = "image/png";
+      break;
+    case "webp":
+      actualMimeType = "image/webp";
+      break;
+  }
+
+  if (!actualMimeType) {
+    throw new AppError(
+      422,
+      "INVALID_IMAGE_TYPE",
+      "Only JPEG, PNG, and WebP images are allowed.",
+    );
+  }
+
+  if (actualMimeType !== declaredMimeType) {
+    throw new AppError(
+      422,
+      "INVALID_IMAGE_CONTENT",
+      "The file contents do not match the declared image type.",
+    );
+  }
+
+  let normalizedBuffer: Buffer;
+
+  try {
+    const image = sharp(buffer, {
+      limitInputPixels: maxPixels,
+      failOn: "error",
+    }).rotate();
+
+    switch (metadata.format) {
+      case "jpeg":
+        normalizedBuffer = await image
+          .jpeg({ quality: 85, mozjpeg: true })
+          .toBuffer();
+        break;
+      case "png":
+        normalizedBuffer = await image.png().toBuffer();
+        break;
+      case "webp":
+        normalizedBuffer = await image.webp({ quality: 85 }).toBuffer();
+        break;
+      default:
+        throw new Error("Unsupported image format");
+    }
+  } catch {
+    throw new AppError(
+      422,
+      "INVALID_IMAGE_CONTENT",
+      "The uploaded image could not be safely processed.",
+    );
+  }
+
+  if (normalizedBuffer.byteLength > MAX_LISTING_IMAGE_BYTES) {
+    throw new AppError(
+      422,
+      "INVALID_IMAGE_SIZE",
+      "The processed image must not exceed 5 MB.",
+    );
+  }
+
+  return normalizedBuffer;
+}
 
 function withImageUrls<T extends { objectKey: string }>(images: T[]) {
   return images.map((image) => ({
@@ -99,7 +209,11 @@ export async function addListingImages(
   await assertSellerAuthorized(sellerId);
 
   if (files.length === 0) {
-    throw new AppError(422, "VALIDATION_ERROR", "Please upload at least one image.");
+    throw new AppError(
+      422,
+      "VALIDATION_ERROR",
+      "Please upload at least one image.",
+    );
   }
 
   if (files.length > MAX_LISTING_IMAGES_PER_LISTING) {
@@ -151,6 +265,7 @@ export async function addListingImages(
   }
 
   const uploadedObjectKeys: string[] = [];
+
   const records: {
     listingId: string;
     objectKey: string;
@@ -160,34 +275,42 @@ export async function addListingImages(
 
   try {
     for (const [index, file] of files.entries()) {
-      const mimeType = file.mimetype?.toLowerCase();
-      if (!mimeType || !ALLOWED_LISTING_IMAGE_TYPES.has(mimeType)) {
-        throw new AppError(
-          422,
-          "INVALID_IMAGE_TYPE",
-          "Only JPEG, PNG, and WebP images are allowed.",
-        );
-      }
+  const mimeType = file.mimetype?.toLowerCase();
 
-      const buffer = file.buffer;
-      if (buffer.byteLength === 0 || buffer.byteLength > MAX_LISTING_IMAGE_BYTES) {
-        throw new AppError(
-          422,
-          "INVALID_IMAGE_SIZE",
-          "Each image must be smaller than 5 MB.",
-        );
-      }
+  if (!mimeType || !ALLOWED_LISTING_IMAGE_TYPES.has(mimeType)) {
+    throw new AppError(
+      422,
+      "INVALID_IMAGE_TYPE",
+      "Only JPEG, PNG, and WebP images are allowed.",
+    );
+  }
 
-      const objectKey = createListingObjectKey(listingId, mimeType);
-      await writeListingImageFile(objectKey, buffer);
-      uploadedObjectKeys.push(objectKey);
-      records.push({
-        listingId: listing.id,
-        objectKey,
-        sortOrder: existingCount + index,
-        processingStatus: "READY",
-      });
-    }
+     const buffer = file.buffer;
+
+  if (
+    buffer.byteLength === 0 ||
+    buffer.byteLength > MAX_LISTING_IMAGE_BYTES
+  ) {
+    throw new AppError(
+      422,
+      "INVALID_IMAGE_SIZE",
+      "Each image must not exceed 5 MB.",
+    );
+  }
+
+    const normalizedBuffer = await normalizeListingImage(buffer, mimeType);
+  const objectKey = createListingObjectKey(listingId, mimeType);
+
+  await writeListingImageFile(objectKey, normalizedBuffer);
+  uploadedObjectKeys.push(objectKey);
+
+  records.push({
+    listingId: listing.id,
+    objectKey,
+    sortOrder: existingCount + index,
+    processingStatus: "READY",
+  });
+}
 
     await prisma.listingImage.createMany({
       data: records,
@@ -196,7 +319,12 @@ export async function addListingImages(
     const images = await prisma.listingImage.findMany({
       where: { listingId: listing.id },
       orderBy: { sortOrder: "asc" },
-      select: { id: true, objectKey: true, sortOrder: true, processingStatus: true },
+      select: {
+        id: true,
+        objectKey: true,
+        sortOrder: true,
+        processingStatus: true,
+      },
     });
 
     return withImageUrls(images);
@@ -209,93 +337,129 @@ export async function addListingImages(
   }
 }
 
-type PublishListingInput = {
-  listingId: string;
-  sellerId: string;
-};
 
 export async function publishListing(input: PublishListingInput) {
+  // Authorization must happen before checking listing details.
   await assertSellerAuthorized(input.sellerId);
 
-  const listing = await prisma.listing.findUnique({
-    where: {
-      id: input.listingId,
-    },
-    select: {
-      id: true,
-      sellerId: true,
-      status: true,
-      category: {
-        select: {
-          id: true,
-          isActive: true,
+  return prisma.$transaction(async (transaction) => {
+    const listing = await transaction.listing.findUnique({
+      where: { id: input.listingId },
+      select: {
+        id: true,
+        sellerId: true,
+        status: true,
+        category: {
+          select: {
+            id: true,
+            isActive: true,
+          },
         },
       },
-    },
-  });
+    });
 
-  if (!listing) {
-    throw new AppError(
-      404,
-      "LISTING_NOT_FOUND",
-      "Listing not found.",
-    );
-  }
+    if (!listing) {
+      throw new AppError(
+        404,
+        "LISTING_NOT_FOUND",
+        "Listing not found.",
+      );
+    }
 
-  if (listing.sellerId !== input.sellerId) {
-    throw new AppError(
-      403,
-      "FORBIDDEN",
-      "You do not have permission to publish this listing.",
-    );
-  }
+    if (listing.sellerId !== input.sellerId) {
+      throw new AppError(
+        403,
+        "FORBIDDEN",
+        "You do not have permission to publish this listing.",
+      );
+    }
 
-  if (listing.status !== ListingStatus.DRAFT) {
-    throw new AppError(
-      409,
-      "INVALID_LISTING_STATUS",
-      "Only draft listings can be published.",
-    );
-  }
+    if (listing.status !== ListingStatus.DRAFT) {
+      throw new AppError(
+        409,
+        "INVALID_LISTING_STATUS",
+        "Only draft listings can be published.",
+      );
+    }
 
-  if (!listing.category.isActive) {
-    throw new AppError(
-      409,
-      "CATEGORY_INACTIVE",
-      "This category is not currently available.",
-    );
-  }
+    if (!listing.category.isActive) {
+      throw new AppError(
+        409,
+        "CATEGORY_INACTIVE",
+        "This category is not currently available.",
+      );
+    }
 
-  const publishedListing = await prisma.listing.update({
-    where: {
-      id: listing.id,
-    },
-    data: {
-      status: ListingStatus.PUBLISHED,
-      publishedAt: new Date(),
-    },
-    select: {
-      id: true,
-      title: true,
-      description: true,
-      price: true,
-      condition: true,
-      location: true,
-      status: true,
-      createdAt: true,
-      publishedAt: true,
-      category: {
-        select: {
-          id: true,
-          name: true,
-          slug: true,
+    const readyImageCount = await transaction.listingImage.count({
+      where: {
+        listingId: listing.id,
+        processingStatus: "READY",
+      },
+    });
+
+    if (readyImageCount < 1) {
+      throw new AppError(
+        422,
+        "LISTING_IMAGE_REQUIRED",
+        "Upload at least one valid image before publishing.",
+      );
+    }
+
+    // Only one request can successfully perform this draft transition.
+    const updateResult = await transaction.listing.updateMany({
+      where: {
+        id: listing.id,
+        sellerId: input.sellerId,
+        status: ListingStatus.DRAFT,
+      },
+      data: {
+        status: ListingStatus.PUBLISHED,
+        publishedAt: new Date(),
+      },
+    });
+
+    if (updateResult.count !== 1) {
+      throw new AppError(
+        409,
+        "INVALID_LISTING_STATUS",
+        "This listing has changed. Refresh and try again.",
+      );
+    }
+
+    const publishedListing = await transaction.listing.findUnique({
+      where: { id: listing.id },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        price: true,
+        condition: true,
+        location: true,
+        status: true,
+        createdAt: true,
+        publishedAt: true,
+        category: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
+          },
         },
       },
-    },
-  });
+    });
 
-  return publishedListing;
+    if (!publishedListing) {
+      throw new AppError(
+        500,
+        "PUBLISH_FAILED",
+        "The listing could not be retrieved after publishing.",
+      );
+    }
+
+    return publishedListing;
+  });
 }
+
 
 async function transitionListing(
   listingId: string,
@@ -339,7 +503,9 @@ async function transitionListing(
       },
       data: {
         status: nextStatus,
-        ...(nextStatus === ListingStatus.SOLD ? { soldAt: new Date() } : {}),
+        ...(nextStatus === ListingStatus.SOLD
+          ? { soldAt: new Date() }
+          : {}),
       },
     });
 
@@ -375,7 +541,10 @@ async function transitionListing(
   });
 }
 
-export async function reserveListing(listingId: string, sellerId: string) {
+export async function reserveListing(
+  listingId: string,
+  sellerId: string,
+) {
   return transitionListing(
     listingId,
     sellerId,
@@ -384,7 +553,10 @@ export async function reserveListing(listingId: string, sellerId: string) {
   );
 }
 
-export async function markListingSold(listingId: string, sellerId: string) {
+export async function markListingSold(
+  listingId: string,
+  sellerId: string,
+) {
   return transitionListing(
     listingId,
     sellerId,
@@ -404,84 +576,65 @@ export async function releaseListingReservation(
     ListingStatus.PUBLISHED,
   );
 }
-type ListPublishedListingsInput = {
-  page: number;
-  pageSize: number;
-};
 
 export async function getPublishedListings(
   input: ListPublishedListingsInput,
 ) {
   const skip = (input.page - 1) * input.pageSize;
 
-  try {
-    const [listings, total] = await prisma.$transaction([
-      prisma.listing.findMany({
-        where: {
-          status: ListingStatus.PUBLISHED,
-        },
-        orderBy: {
-          createdAt: "desc",
-        },
-        skip,
-        take: input.pageSize,
-        select: {
-          id: true,
-          title: true,
-          description: true,
-          price: true,
-          condition: true,
-          location: true,
-          status: true,
-          createdAt: true,
-          publishedAt: true,
-          category: {
-            select: {
-              id: true,
-              name: true,
-              slug: true,
-            },
-          },
-          images: {
-            where: {
-              processingStatus: "READY",
-            },
-            orderBy: {
-              sortOrder: "asc",
-            },
-            select: {
-              id: true,
-              objectKey: true,
-              sortOrder: true,
-            },
+  const [listings, total] = await prisma.$transaction([
+    prisma.listing.findMany({
+      where: { status: ListingStatus.PUBLISHED },
+      orderBy: { createdAt: "desc" },
+      skip,
+      take: input.pageSize,
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        price: true,
+        condition: true,
+        location: true,
+        status: true,
+        createdAt: true,
+        publishedAt: true,
+        category: {
+          select: {
+            id: true,
+            name: true,
+            slug: true,
           },
         },
-      }),
-
-      prisma.listing.count({
-        where: {
-          status: ListingStatus.PUBLISHED,
+        images: {
+          where: { processingStatus: "READY" },
+          orderBy: { sortOrder: "asc" },
+          select: {
+            id: true,
+            objectKey: true,
+            sortOrder: true,
+          },
         },
-      }),
-    ]);
-
-    return {
-      listings: listings.map((listing) => ({
-        ...listing,
-        images: withImageUrls(listing.images),
-      })),
-      meta: {
-        page: input.page,
-        pageSize: input.pageSize,
-        total,
-        totalPages: Math.ceil(total / input.pageSize),
       },
-    };
-  } catch (error) {
-    console.error("GET PUBLISHED LISTINGS ERROR:", error);
-    throw error;
-  }
+    }),
+    prisma.listing.count({
+      where: { status: ListingStatus.PUBLISHED },
+    }),
+  ]);
+
+  return {
+    listings: listings.map((listing) => ({
+      ...listing,
+      images: withImageUrls(listing.images),
+    })),
+    meta: {
+      page: input.page,
+      pageSize: input.pageSize,
+      total,
+      totalPages: Math.ceil(total / input.pageSize),
+    },
+  };
 }
+
 export async function getPublicListing(listingId: string) {
   const listing = await prisma.listing.findFirst({
     where: {
@@ -506,12 +659,8 @@ export async function getPublicListing(listingId: string) {
         },
       },
       images: {
-        where: {
-          processingStatus: "READY",
-        },
-        orderBy: {
-          sortOrder: "asc",
-        },
+        where: { processingStatus: "READY" },
+        orderBy: { sortOrder: "asc" },
         select: {
           id: true,
           objectKey: true,
@@ -588,7 +737,11 @@ export async function getSellerListings(
         images: {
           where: { processingStatus: "READY" },
           orderBy: { sortOrder: "asc" },
-          select: { id: true, objectKey: true, sortOrder: true },
+          select: {
+            id: true,
+            objectKey: true,
+            sortOrder: true,
+          },
         },
       },
     }),
@@ -636,7 +789,11 @@ export async function getBuyerInquiries(
             title: true,
             status: true,
             category: {
-              select: { id: true, name: true, slug: true },
+              select: {
+                id: true,
+                name: true,
+                slug: true,
+              },
             },
           },
         },
@@ -745,7 +902,8 @@ export async function getListingInquiries(
     ...inquiry,
     buyer: {
       name: buyer.studentProfile?.displayName ?? "MUT student",
-      verified: buyer.studentProfile?.verificationStatus === "APPROVED",
+      verified:
+        buyer.studentProfile?.verificationStatus === "APPROVED",
     },
   }));
 }
@@ -792,7 +950,10 @@ export async function updateInquiryStatus(
     );
   }
 
-  const validTransitions: Record<ListingInquiryStatus, ListingInquiryStatus[]> = {
+  const validTransitions: Record<
+    ListingInquiryStatus,
+    ListingInquiryStatus[]
+  > = {
     OPEN: [ListingInquiryStatus.RESPONDED, ListingInquiryStatus.CLOSED],
     RESPONDED: [ListingInquiryStatus.CLOSED],
     CLOSED: [],
@@ -811,9 +972,7 @@ export async function updateInquiryStatus(
       id: inquiryId,
       listingId,
       status: inquiry.status,
-      listing: {
-        sellerId,
-      },
+      listing: { sellerId },
     },
     data: {
       status,
@@ -838,10 +997,6 @@ export async function updateInquiryStatus(
     },
   });
 }
-
-type UpdateListingInput = {
-  [Key in keyof CreateListingInput]?: CreateListingInput[Key] | undefined;
-};
 
 export async function updateListing(
   listingId: string,
@@ -882,7 +1037,7 @@ export async function updateListing(
     );
   }
 
-  if (input.categoryId) {
+  if (input.categoryId !== undefined) {
     const category = await prisma.category.findUnique({
       where: { id: input.categoryId },
       select: { id: true, isActive: true },
@@ -904,11 +1059,17 @@ export async function updateListing(
   const listing = await prisma.listing.update({
     where: { id: existing.id },
     data: {
-      ...(input.categoryId === undefined ? {} : { categoryId: input.categoryId }),
+      ...(input.categoryId === undefined
+        ? {}
+        : { categoryId: input.categoryId }),
       ...(input.title === undefined ? {} : { title: input.title }),
-      ...(input.description === undefined ? {} : { description: input.description }),
+      ...(input.description === undefined
+        ? {}
+        : { description: input.description }),
       ...(input.price === undefined ? {} : { price: input.price }),
-      ...(input.condition === undefined ? {} : { condition: input.condition }),
+      ...(input.condition === undefined
+        ? {}
+        : { condition: input.condition }),
       ...(input.location === undefined ? {} : { location: input.location }),
     },
     select: {
@@ -946,7 +1107,10 @@ export async function updateListing(
   };
 }
 
-export async function removeListing(listingId: string, sellerId: string) {
+export async function removeListing(
+  listingId: string,
+  sellerId: string,
+) {
   await assertSellerAuthorized(sellerId);
 
   const existing = await prisma.listing.findUnique({
@@ -990,7 +1154,9 @@ export async function removeListing(listingId: string, sellerId: string) {
     where: {
       id: existing.id,
       sellerId,
-      status: { notIn: [ListingStatus.SOLD, ListingStatus.REMOVED] },
+      status: {
+        notIn: [ListingStatus.SOLD, ListingStatus.REMOVED],
+      },
     },
     data: { status: ListingStatus.REMOVED },
   });
@@ -1008,7 +1174,9 @@ export async function removeListing(listingId: string, sellerId: string) {
     select: { objectKey: true },
   });
 
-  await deleteListingImageFiles(listingImages.map((image) => image.objectKey));
+  await deleteListingImageFiles(
+    listingImages.map((image) => image.objectKey),
+  );
 
   return prisma.listing.findUniqueOrThrow({
     where: { id: existing.id },
@@ -1018,4 +1186,67 @@ export async function removeListing(listingId: string, sellerId: string) {
       updatedAt: true,
     },
   });
+}
+
+/**
+ * Retrieve a seller's own draft for editing.
+ *
+ * Authentication is enforced by the route. This function independently
+ * verifies seller eligibility and restricts the database query to the
+ * supplied seller ID and DRAFT status.
+ */
+export async function getSellerListingForEdit(
+  listingId: string,
+  sellerId: string,
+) {
+  await assertSellerAuthorized(sellerId);
+
+  const listing = await prisma.listing.findFirst({
+    where: {
+      id: listingId,
+      sellerId,
+      status: ListingStatus.DRAFT,
+    },
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      price: true,
+      condition: true,
+      location: true,
+      status: true,
+      createdAt: true,
+      updatedAt: true,
+      category: {
+        select: {
+          id: true,
+          name: true,
+          slug: true,
+        },
+      },
+      images: {
+        where: { processingStatus: "READY" },
+        orderBy: { sortOrder: "asc" },
+        select: {
+          id: true,
+          objectKey: true,
+          sortOrder: true,
+          processingStatus: true,
+        },
+      },
+    },
+  });
+
+  if (!listing) {
+    throw new AppError(
+      404,
+      "LISTING_NOT_FOUND",
+      "The draft could not be found.",
+    );
+  }
+
+  return {
+    ...listing,
+    images: withImageUrls(listing.images),
+  };
 }

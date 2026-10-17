@@ -1,4 +1,4 @@
-import apiClient from "./apiClient";
+﻿import apiClient from "./apiClient";
 
 export const previewListings = [
   {
@@ -237,4 +237,41 @@ export async function releaseListingReservation(listingId) {
     `/listings/${encodeURIComponent(listingId)}/release-reservation`,
   );
   return data?.listing;
+}
+
+export async function getListingForEdit(listingId) {
+  const { data } = await apiClient.get(
+    `/listings/${encodeURIComponent(listingId)}/edit`,
+  );
+
+  if (!data?.listing?.id) {
+    throw new Error("The draft response was invalid.");
+  }
+
+  return data.listing;
+}
+
+export async function updateListing(listingId, payload) {
+  const { data } = await apiClient.patch(
+    `/listings/${encodeURIComponent(listingId)}`,
+    payload,
+  );
+
+  if (!data?.listing?.id) {
+    throw new Error("The listing update response was invalid.");
+  }
+
+  return data.listing;
+}
+
+export async function publishListing(listingId) {
+  const { data } = await apiClient.post(
+    `/listings/${encodeURIComponent(listingId)}/publish`,
+  );
+
+  if (!data?.listing?.id) {
+    throw new Error("The publish response was invalid.");
+  }
+
+  return data.listing;
 }

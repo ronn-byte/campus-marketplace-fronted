@@ -1,3 +1,4 @@
+import { randomInt } from "node:crypto";
 import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 import {
@@ -16,6 +17,7 @@ process.env.APP_URL ??= "http://localhost:3000";
 process.env.CORS_ORIGIN ??= "http://localhost:5173";
 process.env.STUDENT_DATA_ENCRYPTION_KEY ??= Buffer.alloc(32).toString("base64");
 
+const { createListingObjectKey } = await import("../src/lib/storage.js");
 const { prisma } = await import("../src/lib/prisma.js");
 const { resend } = await import("../src/lib/email.js");
 const { env } = await import("../src/config/env.js");
@@ -114,6 +116,17 @@ async function createDraftListing(sellerId: string) {
   });
 }
 
+async function createReadyListingImage(listingId: string) {
+  return prisma.listingImage.create({
+    data: {
+      listingId,
+      objectKey: createListingObjectKey(listingId, "image/png"),
+      sortOrder: 0,
+      processingStatus: "READY",
+    },
+  });
+}
+
 before(async () => {
   await app.ready();
   const category = await prisma.category.create({
@@ -128,6 +141,26 @@ before(async () => {
 after(async () => {
   if (actorIds.length > 0) {
     const ids = actorIds;
+
+
+    await prisma.listingInquiry.deleteMany({
+      where: {
+        OR: [
+          { buyerId: { in: ids } },
+          { listing: { sellerId: { in: ids } } },
+        ],
+      },
+    });
+
+
+    await prisma.listingImage.deleteMany({
+      where: {
+        listing: {
+          sellerId: { in: ids },
+        },
+      },
+    });
+
     await prisma.listing.deleteMany({ where: { sellerId: { in: ids } } });
     await prisma.emailVerificationToken.deleteMany({ where: { userId: { in: ids } } });
     await prisma.passwordResetToken.deleteMany({ where: { userId: { in: ids } } });
@@ -210,14 +243,32 @@ test("seller authorization is enforced by listing services for each verification
     assert.equal(create.statusCode, 201);
     const listingId = create.json().listing.id as string;
 
+
+    const publishWithoutImage = await app.inject({
+      method: "POST",
+      url: `/api/v1/listings/${listingId}/publish`,
+      headers: authHeaders(actor.sessionToken),
+      payload: { status: ListingStatus.SOLD },
+    });
+
+    assert.equal(publishWithoutImage.statusCode, 422);
+    assert.equal(
+      publishWithoutImage.json().error.code,
+      "LISTING_IMAGE_REQUIRED",
+    );
+
+    await createReadyListingImage(listingId);
+
     const publish = await app.inject({
       method: "POST",
       url: `/api/v1/listings/${listingId}/publish`,
       headers: authHeaders(actor.sessionToken),
       payload: { status: ListingStatus.SOLD },
     });
+
     assert.equal(publish.statusCode, 200);
     assert.equal(publish.json().listing.status, ListingStatus.PUBLISHED);
+
 
     const republish = await app.inject({
       method: "POST",
@@ -311,6 +362,13 @@ test("public listing route returns published listings without authentication", a
     method: "GET",
     url: "/api/v1/listings",
   });
+
+  if (response.statusCode !== 200) {
+  console.error("PUBLIC LISTINGS FAILURE:", {
+    statusCode: response.statusCode,
+    body: response.body,
+  });
+}
 
   assert.equal(response.statusCode, 200);
   const body = response.json();
@@ -493,6 +551,7 @@ test("listing updates require a verified active owner and reject protected field
     }
   });
 
+  await createReadyListingImage(listing.id);
   await t.test("only the existing draft-to-published transition is supported", async () => {
     const publish = await app.inject({
       method: "POST",
@@ -730,10 +789,20 @@ test("manual verification reviews require moderator/admin authorization and forb
   assert.equal(selfReview.statusCode, 403);
 });
 
+
 test("university email verification proves the expected registration-number mailbox", async () => {
   const actor = await createActor();
+
+  const registrationNumber =
+    `sc201/${String(randomInt(0, 10_000)).padStart(4, "0")}/${String(randomInt(0, 10_000)).padStart(4, "0")}`;
+
+  const expectedEmail = expectedMutStudentEmail(registrationNumber);
+  const spacedRegistrationNumber =
+    `${registrationNumber.slice(0, 5)} / ${registrationNumber.slice(6, 10)} / ${registrationNumber.slice(11)}`;
+
   const messages: Array<{ to: string; html: string }> = [];
   const originalSend = resend.emails.send;
+
   resend.emails.send = async (payload) => {
     messages.push({
       to: Array.isArray(payload.to) ? payload.to[0] : payload.to,
@@ -743,34 +812,53 @@ test("university email verification proves the expected registration-number mail
   };
 
   try {
-    assert.equal(expectedMutStudentEmail("sc201/3038/2023"), "sc20130382023@student.mut.ac.ke");
-    assert.equal(isExpectedMutStudentEmail("sc201/3038/2023", "anything@student.mut.ac.ke"), false);
-    assert.equal(isExpectedMutStudentEmail("sc201 / 3038 / 2023", "SC20130382023@STUDENT.MUT.AC.KE"), true);
+    assert.equal(expectedMutStudentEmail(registrationNumber), expectedEmail);
+
+    assert.equal(
+      isExpectedMutStudentEmail(registrationNumber, "anything@student.mut.ac.ke"),
+      false,
+    );
+
+    assert.equal(
+      isExpectedMutStudentEmail(
+        spacedRegistrationNumber,
+        expectedEmail.toUpperCase(),
+      ),
+      true,
+    );
 
     await assert.rejects(
-      () => submitVerification(actor.user.id, {
-        method: VerificationMethod.UNIVERSITY_EMAIL,
-        registrationNumber: "sc201/3038/2023",
-        email: "anything@student.mut.ac.ke",
-      }),
-      (error: unknown) => error instanceof AppError && error.code === "INVALID_STUDENT_EMAIL",
+      () =>
+        submitVerification(actor.user.id, {
+          method: VerificationMethod.UNIVERSITY_EMAIL,
+          registrationNumber,
+          email: "anything@student.mut.ac.ke",
+        }),
+      (error: unknown) =>
+        error instanceof AppError && error.code === "INVALID_STUDENT_EMAIL",
     );
+
     assert.equal(messages.length, 0);
 
     await submitVerification(actor.user.id, {
       method: VerificationMethod.UNIVERSITY_EMAIL,
-      registrationNumber: "sc201 / 3038 / 2023",
-      email: "SC20130382023@STUDENT.MUT.AC.KE",
+      registrationNumber: spacedRegistrationNumber,
+      email: expectedEmail.toUpperCase(),
     });
+
     assert.equal(messages.length, 1);
-    assert.equal(messages[0].to, "sc20130382023@student.mut.ac.ke");
+    assert.equal(messages[0].to, expectedEmail);
+
     await assert.rejects(
-      () => submitVerification(actor.user.id, {
-        method: VerificationMethod.MANUAL_STUDENT,
-        registrationNumber: "sc201 / 3038 / 2023",
-      }),
-      (error: unknown) => error instanceof AppError && error.code === "VERIFICATION_PENDING",
+      () =>
+        submitVerification(actor.user.id, {
+          method: VerificationMethod.MANUAL_STUDENT,
+          registrationNumber: spacedRegistrationNumber,
+        }),
+      (error: unknown) =>
+        error instanceof AppError && error.code === "VERIFICATION_PENDING",
     );
+
     const encodedToken = messages[0].html.match(/token=([^&"]+)/)?.[1];
     assert.ok(encodedToken);
     const token = decodeURIComponent(encodedToken);
@@ -783,16 +871,22 @@ test("university email verification proves the expected registration-number mail
         expiresAt: new Date(Date.now() + 60_000),
       },
     });
+
     await assert.rejects(
       () => verifyUniversityEmailToken(accountToken),
-      (error: unknown) => error instanceof AppError && error.code === "INVALID_VERIFICATION_TOKEN",
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.code === "INVALID_VERIFICATION_TOKEN",
     );
+
     const { verifyEmail } = await import("../src/modules/auth/auth.service.js");
     await verifyEmail(accountToken);
 
     await assert.rejects(
       () => verifyEmail(token),
-      (error: unknown) => error instanceof AppError && error.code === "INVALID_VERIFICATION_TOKEN",
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.code === "INVALID_VERIFICATION_TOKEN",
     );
 
     const verifiedByEmail = await app.inject({
@@ -800,14 +894,23 @@ test("university email verification proves the expected registration-number mail
       url: "/api/v1/verification/verify-email",
       payload: { token },
     });
+
     assert.equal(verifiedByEmail.statusCode, 204);
     assert.equal(verifiedByEmail.body, "");
+
     const state = await prisma.studentProfile.findUnique({
       where: { userId: actor.user.id },
-      select: { verificationStatus: true, registrationNumberCiphertext: true },
+      select: {
+        verificationStatus: true,
+        registrationNumberCiphertext: true,
+      },
     });
+
     assert.equal(state?.verificationStatus, VerificationStatus.APPROVED);
-    assert.notEqual(state?.registrationNumberCiphertext, "sc20130382023");
+    assert.notEqual(
+      state?.registrationNumberCiphertext,
+      registrationNumber.replace(/\D/g, ""),
+    );
   } finally {
     resend.emails.send = originalSend;
   }

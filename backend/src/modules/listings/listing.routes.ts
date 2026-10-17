@@ -1,3 +1,4 @@
+
 import type { FastifyInstance } from "fastify";
 import { AppError } from "../../app/errors.js";
 import { requireAuth } from "../../middleware/auth.js";
@@ -21,6 +22,7 @@ import {
   getListingInquiries,
   getPublicListing,
   getPublishedListings,
+  getSellerListingForEdit,
   getSellerListings,
   markListingSold,
   publishListing,
@@ -38,8 +40,6 @@ export async function registerListingRoutes(app: FastifyInstance) {
   });
 
   app.get("/listings", async (request, reply) => {
-    console.log("LISTINGS QUERY DEBUG:", request.query);
-    
     const result = listListingsQuerySchema.safeParse(request.query);
 
     if (!result.success) {
@@ -59,59 +59,109 @@ export async function registerListingRoutes(app: FastifyInstance) {
     });
   });
 
-  app.get("/listings/me", { preHandler: requireAuth }, async (request, reply) => {
-    const result = listListingsQuerySchema.safeParse(request.query);
+  app.get(
+    "/listings/me",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const result = listListingsQuerySchema.safeParse(request.query);
 
-    if (!result.success) {
-      throw new AppError(
-        422,
-        "VALIDATION_ERROR",
-        "Please check the submitted query parameters.",
+      if (!result.success) {
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "Please check the submitted query parameters.",
+        );
+      }
+
+      const user = request.user;
+
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const listings = await getSellerListings(user.id, result.data);
+      return reply.status(200).send(listings);
+    },
+  );
+
+  app.get(
+    "/inquiries/me",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const result = listListingsQuerySchema.safeParse(request.query);
+
+      if (!result.success) {
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "Please check the submitted query parameters.",
+        );
+      }
+
+      const user = request.user;
+
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const inquiries = await getBuyerInquiries(user.id, result.data);
+      return reply.status(200).send(inquiries);
+    },
+  );
+
+  // Authenticated sellers can retrieve only their own editable drafts.
+  app.get(
+    "/listings/:listingId/edit",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingParamsSchema.safeParse(request.params);
+
+      if (!params.success) {
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing ID is invalid.",
+        );
+      }
+
+      const user = request.user;
+
+      if (!user) {
+        throw new AppError(
+          401,
+          "UNAUTHENTICATED",
+          "Authentication is required.",
+        );
+      }
+
+      const listing = await getSellerListingForEdit(
+        params.data.listingId,
+        user.id,
       );
-    }
 
-    const user = request.user;
-    if (!user) {
-      throw new AppError(
-        401,
-        "UNAUTHENTICATED",
-        "Authentication is required.",
-      );
-    }
+      return reply.status(200).send({ listing });
+    },
+  );
 
-    const listings = await getSellerListings(user.id, result.data);
-    return reply.status(200).send(listings);
-  });
-
-  app.get("/inquiries/me", { preHandler: requireAuth }, async (request, reply) => {
-    const result = listListingsQuerySchema.safeParse(request.query);
-
-    if (!result.success) {
-      throw new AppError(
-        422,
-        "VALIDATION_ERROR",
-        "Please check the submitted query parameters.",
-      );
-    }
-
-    const user = request.user;
-    if (!user) {
-      throw new AppError(
-        401,
-        "UNAUTHENTICATED",
-        "Authentication is required.",
-      );
-    }
-
-    const inquiries = await getBuyerInquiries(user.id, result.data);
-    return reply.status(200).send(inquiries);
-  });
-
+  // Public listing details are available only through the service's
+  // published-listing checks.
   app.get("/listings/:listingId", async (request, reply) => {
     const result = listingParamsSchema.safeParse(request.params);
 
     if (!result.success) {
-      throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+      throw new AppError(
+        422,
+        "VALIDATION_ERROR",
+        "The listing ID is invalid.",
+      );
     }
 
     const listing = await getPublicListing(result.data.listingId);
@@ -123,11 +173,17 @@ export async function registerListingRoutes(app: FastifyInstance) {
     { preHandler: requireAuth },
     async (request, reply) => {
       const params = listingParamsSchema.safeParse(request.params);
+
       if (!params.success) {
-        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing ID is invalid.",
+        );
       }
 
       const user = request.user;
+
       if (!user) {
         throw new AppError(
           401,
@@ -153,7 +209,12 @@ export async function registerListingRoutes(app: FastifyInstance) {
         });
       }
 
-      const images = await addListingImages(params.data.listingId, user.id, files);
+      const images = await addListingImages(
+        params.data.listingId,
+        user.id,
+        files,
+      );
+
       return reply.status(201).send({ images });
     },
   );
@@ -163,11 +224,17 @@ export async function registerListingRoutes(app: FastifyInstance) {
     { preHandler: requireAuth },
     async (request, reply) => {
       const params = listingParamsSchema.safeParse(request.params);
+
       if (!params.success) {
-        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing ID is invalid.",
+        );
       }
 
       const result = createListingInquirySchema.safeParse(request.body);
+
       if (!result.success) {
         throw new AppError(
           422,
@@ -177,6 +244,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
       }
 
       const user = request.user;
+
       if (!user) {
         throw new AppError(
           401,
@@ -190,6 +258,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
         user.id,
         result.data.message,
       );
+
       return reply.status(201).send({ inquiry });
     },
   );
@@ -199,11 +268,17 @@ export async function registerListingRoutes(app: FastifyInstance) {
     { preHandler: requireAuth },
     async (request, reply) => {
       const params = listingParamsSchema.safeParse(request.params);
+
       if (!params.success) {
-        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing ID is invalid.",
+        );
       }
 
       const user = request.user;
+
       if (!user) {
         throw new AppError(
           401,
@@ -216,6 +291,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
         params.data.listingId,
         user.id,
       );
+
       return reply.status(200).send({ inquiries });
     },
   );
@@ -225,6 +301,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
     { preHandler: requireAuth },
     async (request, reply) => {
       const params = listingInquiryParamsSchema.safeParse(request.params);
+
       if (!params.success) {
         throw new AppError(
           422,
@@ -234,6 +311,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
       }
 
       const result = updateInquiryStatusSchema.safeParse(request.body);
+
       if (!result.success) {
         throw new AppError(
           422,
@@ -243,6 +321,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
       }
 
       const user = request.user;
+
       if (!user) {
         throw new AppError(
           401,
@@ -267,11 +346,17 @@ export async function registerListingRoutes(app: FastifyInstance) {
     { preHandler: requireAuth },
     async (request, reply) => {
       const params = listingParamsSchema.safeParse(request.params);
+
       if (!params.success) {
-        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing ID is invalid.",
+        );
       }
 
       const result = updateListingSchema.safeParse(request.body);
+
       if (!result.success) {
         throw new AppError(
           422,
@@ -281,6 +366,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
       }
 
       const user = request.user;
+
       if (!user) {
         throw new AppError(
           401,
@@ -294,6 +380,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
         user.id,
         result.data,
       );
+
       return reply.status(200).send({ listing });
     },
   );
@@ -303,11 +390,17 @@ export async function registerListingRoutes(app: FastifyInstance) {
     { preHandler: requireAuth },
     async (request, reply) => {
       const params = listingParamsSchema.safeParse(request.params);
+
       if (!params.success) {
-        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing ID is invalid.",
+        );
       }
 
       const user = request.user;
+
       if (!user) {
         throw new AppError(
           401,
@@ -316,7 +409,11 @@ export async function registerListingRoutes(app: FastifyInstance) {
         );
       }
 
-      const listing = await removeListing(params.data.listingId, user.id);
+      const listing = await removeListing(
+        params.data.listingId,
+        user.id,
+      );
+
       return reply.status(200).send({ listing });
     },
   );
@@ -350,9 +447,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
         sellerId: user.id,
       });
 
-      return reply.status(200).send({
-        listing,
-      });
+      return reply.status(200).send({ listing });
     },
   );
 
@@ -361,11 +456,17 @@ export async function registerListingRoutes(app: FastifyInstance) {
     { preHandler: requireAuth },
     async (request, reply) => {
       const params = listingParamsSchema.safeParse(request.params);
+
       if (!params.success) {
-        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing ID is invalid.",
+        );
       }
 
       const user = request.user;
+
       if (!user) {
         throw new AppError(
           401,
@@ -374,7 +475,11 @@ export async function registerListingRoutes(app: FastifyInstance) {
         );
       }
 
-      const listing = await reserveListing(params.data.listingId, user.id);
+      const listing = await reserveListing(
+        params.data.listingId,
+        user.id,
+      );
+
       return reply.status(200).send({ listing });
     },
   );
@@ -384,11 +489,17 @@ export async function registerListingRoutes(app: FastifyInstance) {
     { preHandler: requireAuth },
     async (request, reply) => {
       const params = listingParamsSchema.safeParse(request.params);
+
       if (!params.success) {
-        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing ID is invalid.",
+        );
       }
 
       const user = request.user;
+
       if (!user) {
         throw new AppError(
           401,
@@ -397,7 +508,11 @@ export async function registerListingRoutes(app: FastifyInstance) {
         );
       }
 
-      const listing = await markListingSold(params.data.listingId, user.id);
+      const listing = await markListingSold(
+        params.data.listingId,
+        user.id,
+      );
+
       return reply.status(200).send({ listing });
     },
   );
@@ -407,11 +522,17 @@ export async function registerListingRoutes(app: FastifyInstance) {
     { preHandler: requireAuth },
     async (request, reply) => {
       const params = listingParamsSchema.safeParse(request.params);
+
       if (!params.success) {
-        throw new AppError(422, "VALIDATION_ERROR", "The listing ID is invalid.");
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          "The listing ID is invalid.",
+        );
       }
 
       const user = request.user;
+
       if (!user) {
         throw new AppError(
           401,
@@ -424,6 +545,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
         params.data.listingId,
         user.id,
       );
+
       return reply.status(200).send({ listing });
     },
   );
@@ -454,9 +576,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
 
       const listing = await createListing(user.id, result.data);
 
-      return reply.status(201).send({
-        listing,
-      });
+      return reply.status(201).send({ listing });
     },
   );
 }
