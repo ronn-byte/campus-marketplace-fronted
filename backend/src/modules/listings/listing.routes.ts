@@ -9,6 +9,7 @@ import {
   listingInquiryParamsSchema,
   listingParamsSchema,
   listListingsQuerySchema,
+  listPublicListingsQuerySchema,
   publishListingParamsSchema,
   updateInquiryStatusSchema,
   updateListingSchema,
@@ -42,7 +43,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
   });
 
   app.get("/listings", async (request, reply) => {
-    const result = listListingsQuerySchema.safeParse(request.query);
+    const result = listPublicListingsQuerySchema.safeParse(request.query);
 
     if (!result.success) {
       throw new AppError(

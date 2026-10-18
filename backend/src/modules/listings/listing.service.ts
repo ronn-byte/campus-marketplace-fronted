@@ -14,6 +14,10 @@ import { Prisma } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 import { prisma } from "../../lib/prisma.js";
 import {
+  MAX_PUBLIC_LISTING_OFFSET,
+  MAX_PUBLIC_LISTING_PAGE,
+} from "./listing.schemas.js";
+import {
   ALLOWED_LISTING_IMAGE_TYPES,
   MAX_LISTING_IMAGE_BYTES,
   MAX_LISTING_IMAGES_PER_LISTING,
@@ -41,6 +45,13 @@ type CreateListingInput = {
 type ListPublishedListingsInput = {
   page: number;
   pageSize: number;
+  q?: string | undefined;
+  categoryId?: string | undefined;
+  minPrice?: number | undefined;
+  maxPrice?: number | undefined;
+  condition?: ListingCondition | undefined;
+  location?: string | undefined;
+  sort?: "newest" | "price_asc" | "price_desc" | undefined;
 };
 
 type PublishListingInput = {
@@ -676,11 +687,46 @@ export async function getPublishedListings(
   input: ListPublishedListingsInput,
 ) {
   const skip = (input.page - 1) * input.pageSize;
+  if (
+    !Number.isSafeInteger(input.page) || input.page < 1 || input.page > MAX_PUBLIC_LISTING_PAGE ||
+    !Number.isSafeInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > 50 ||
+    !Number.isSafeInteger(skip) || skip > MAX_PUBLIC_LISTING_OFFSET
+  ) {
+    throw new AppError(
+      422,
+      "VALIDATION_ERROR",
+      "Please check the submitted query parameters.",
+    );
+  }
+  const filters: Prisma.ListingWhereInput = {};
+  if (input.q) {
+    filters.OR = [
+      { title: { contains: input.q, mode: "insensitive" } },
+      { description: { contains: input.q, mode: "insensitive" } },
+    ];
+  }
+  if (input.categoryId) filters.categoryId = input.categoryId;
+  if (input.condition) filters.condition = input.condition;
+  if (input.location) filters.location = { contains: input.location, mode: "insensitive" };
+  if (input.minPrice !== undefined || input.maxPrice !== undefined) {
+    filters.price = {
+      ...(input.minPrice !== undefined ? { gte: input.minPrice } : {}),
+      ...(input.maxPrice !== undefined ? { lte: input.maxPrice } : {}),
+    };
+  }
+  const where: Prisma.ListingWhereInput = {
+    AND: [eligiblePublishedListingWhere, filters],
+  };
+  const orderBy: Prisma.ListingOrderByWithRelationInput[] = input.sort === "price_asc"
+    ? [{ price: "asc" }, { createdAt: "desc" }, { id: "asc" }]
+    : input.sort === "price_desc"
+      ? [{ price: "desc" }, { createdAt: "desc" }, { id: "asc" }]
+      : [{ createdAt: "desc" }, { id: "asc" }];
 
   const [listings, total] = await prisma.$transaction([
     prisma.listing.findMany({
-      where: eligiblePublishedListingWhere,
-      orderBy: { createdAt: "desc" },
+      where,
+      orderBy,
       skip,
       take: input.pageSize,
       select: {
@@ -712,7 +758,7 @@ export async function getPublishedListings(
       },
     }),
     prisma.listing.count({
-      where: eligiblePublishedListingWhere,
+      where,
     }),
   ]);
 

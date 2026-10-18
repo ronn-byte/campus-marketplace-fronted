@@ -48,27 +48,30 @@ export async function getListings(params = {}) {
       ? data.listings
       : [];
 
-  return items.map((listing) => {
-    const imageUrl = (
-      Array.isArray(listing.images) && listing.images.length > 0 && typeof listing.images[0].url === "string"
-        ? listing.images[0].url
-        : typeof listing.imageUrl === "string" && /^https?:\/\//i.test(listing.imageUrl)
-          ? listing.imageUrl
-          : listingImageFallback
-    );
+  return {
+    items: items.map((listing) => {
+      const imageUrl = (
+        Array.isArray(listing.images) && listing.images.length > 0 && typeof listing.images[0].url === "string"
+          ? listing.images[0].url
+          : typeof listing.imageUrl === "string" && /^https?:\/\//i.test(listing.imageUrl)
+            ? listing.imageUrl
+            : listingImageFallback
+      );
 
-    return {
-      ...listing,
-      category: typeof listing.category === "string"
-        ? listing.category
-        : listing.category?.name || "General",
-      imageUrl,
-      seller: listing.seller || { name: "MUT student", verified: true },
-      condition: listing.condition || "Good",
-      location: listing.location || "Main campus",
-      price: Number(listing.price ?? 0),
-    };
-  });
+      return {
+        ...listing,
+        category: typeof listing.category === "string"
+          ? listing.category
+          : listing.category?.name || "General",
+        imageUrl,
+        seller: listing.seller || { name: "MUT student", verified: true },
+        condition: listing.condition || "Good",
+        location: listing.location || "Main campus",
+        price: Number(listing.price ?? 0),
+      };
+    }),
+    meta: data?.meta || null,
+  };
 }
 
 export async function getListingById(id) {

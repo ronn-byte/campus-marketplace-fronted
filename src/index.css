@@ -80,6 +80,13 @@ h2 { letter-spacing: -.03em; }
 .home-explore-hero__secondary:focus-visible { outline-color: white; }
 .home-page .page-shell { padding-top: 44px; }
 .home-search { margin-bottom: 36px; }
+.home-filters { display: grid; gap: 14px; margin-bottom: 28px; padding: 20px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); box-shadow: var(--shadow-soft); }
+.home-filters label { display: grid; gap: 7px; color: var(--color-text-secondary); font-size: .82rem; font-weight: 700; }
+.home-filters input, .home-filters select { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid var(--color-border); border-radius: 8px; color: var(--color-text); background: white; font: inherit; font-weight: 500; }
+.home-filters input:focus-visible, .home-filters select:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.home-filters__grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.home-filters__keyword { max-width: 680px; }
+.home-filters__actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .home-search > svg { width: 19px; height: 19px; flex: 0 0 19px; fill: none; stroke: var(--color-text-secondary); stroke-width: 1.8; stroke-linecap: round; }
 .home-hero { display: grid; grid-template-columns: 1.1fr .9fr; gap: 48px; align-items: end; padding: 26px 0 62px; }
 .home-hero__copy p { max-width: 530px; color: var(--color-text-secondary); font-size: 1.1rem; line-height: 1.6; }
@@ -208,6 +215,7 @@ h2 { letter-spacing: -.03em; }
   .home-explore-hero__overlay { padding: 34px 16px; }
   .home-page .page-shell { padding-top: 32px; }
   .home-search { margin-bottom: 30px; }
+  .home-filters__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .home-hero { padding-top: 10px; padding-bottom: 40px;   }
 
   @media (max-width: 680px) {
@@ -226,6 +234,8 @@ h2 { letter-spacing: -.03em; }
   h1 { font-size: 2.7rem; }
   .hero-note { padding: 22px; }
   .listing-grid { grid-template-columns: 1fr; }
+  .home-filters { padding: 16px; }
+  .home-filters__grid { grid-template-columns: 1fr; }
   .form-card { padding: 22px; }
   .section-heading { align-items: start; flex-direction: column; gap: 8px; }
 }
