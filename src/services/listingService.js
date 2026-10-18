@@ -241,6 +241,18 @@ export async function releaseListingReservation(listingId) {
   return data?.listing;
 }
 
+export async function removeListing(listingId) {
+  const { data } = await apiClient.delete(
+    `/listings/${encodeURIComponent(listingId)}`,
+  );
+
+  if (!data?.listing?.id) {
+    throw new Error("The removal response was invalid.");
+  }
+
+  return data.listing;
+}
+
 export async function getListingForEdit(listingId) {
   const { data } = await apiClient.get(
     `/listings/${encodeURIComponent(listingId)}/edit`,

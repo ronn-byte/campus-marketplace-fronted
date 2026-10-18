@@ -20,10 +20,13 @@ const {
   getListingImageUrl,
   writeListingImageFile,
 } = await import("../src/lib/storage.js");
+const { buildApp } = await import("../src/app/app.js");
+const app = buildApp();
 
 const listingId = "6d155ee0-f7f6-45b7-b9e4-582c26ac4f41";
 
 after(async () => {
+  await app.close();
   await rm(uploadRoot, { recursive: true, force: true });
 });
 
@@ -65,5 +68,23 @@ test("listing image storage rejects invalid keys and MIME types", async () => {
     assert.throws(() => getListingImageUrl(objectKey));
     await assert.rejects(writeListingImageFile(objectKey, Buffer.from("x")));
     await assert.rejects(deleteListingImageFile(objectKey));
+  }
+});
+
+test("generated listing image URL is served from the configured upload root", async () => {
+  const objectKey = createListingObjectKey(listingId, "image/png");
+  const contents = Buffer.from("isolated image fixture");
+  await writeListingImageFile(objectKey, contents);
+
+  try {
+    const imageUrl = new URL(getListingImageUrl(objectKey));
+    assert.equal(imageUrl.pathname, `/uploads/${objectKey}`);
+
+    const response = await app.inject({ method: "GET", url: imageUrl.pathname });
+    assert.equal(response.statusCode, 200);
+    assert.match(response.headers["content-type"] || "", /^image\/png/);
+    assert.equal(response.body, contents.toString());
+  } finally {
+    await deleteListingImageFile(objectKey);
   }
 });

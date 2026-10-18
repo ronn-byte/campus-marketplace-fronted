@@ -5,10 +5,12 @@ import {
   getListingInquiries,
   getMyListings,
   markListingSold,
+  removeListing,
   releaseListingReservation,
   reserveListing,
   updateListingInquiryStatus,
 } from "../services/listingService";
+import { getListingRemovalAction } from "../services/listingRemoval";
 import { useAuth } from "../hooks/useAuth";
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
@@ -106,6 +108,7 @@ export default function MyListings() {
   }, [isAuthLoading, isAuthenticated, loadListings, page]);
 
   const handleListingAction = async (listing, action, successMessage) => {
+    if (pendingListingId === listing.id) return;
     setPendingListingId(listing.id);
     setMessage("");
     setPageError("");
@@ -118,6 +121,14 @@ export default function MyListings() {
     } finally {
       setPendingListingId(null);
     }
+  };
+
+  const handleListingRemoval = (listing) => {
+    const removal = getListingRemovalAction(listing.status);
+    if (!removal || pendingListingId === listing.id) return;
+    if (!window.confirm(removal.confirmation)) return;
+
+    return handleListingAction(listing, removeListing, removal.successMessage);
   };
 
   const openInquiries = async (listingId) => {
@@ -242,6 +253,18 @@ export default function MyListings() {
                Edit draft
                    </Link>
 )}
+                    {getListingRemovalAction(listing.status) && (
+                      <button
+                        className="button button--secondary"
+                        type="button"
+                        disabled={pendingListingId === listing.id}
+                        onClick={() => handleListingRemoval(listing)}
+                      >
+                        {pendingListingId === listing.id
+                          ? "Removing…"
+                          : getListingRemovalAction(listing.status).label}
+                      </button>
+                    )}
                     {listing.status === "PUBLISHED" && <>
                       <button className="button button--quiet" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, reserveListing, "Listing reserved.")}>{pendingListingId === listing.id ? "Updating…" : "Reserve"}</button>
                       <button className="button button--secondary" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, markListingSold, "Listing marked as sold.")}>{pendingListingId === listing.id ? "Updating…" : "Mark as sold"}</button>
