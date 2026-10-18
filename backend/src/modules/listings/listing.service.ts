@@ -755,6 +755,15 @@ export async function getPublishedListings(
             sortOrder: true,
           },
         },
+        seller: {
+          select: {
+            studentProfile: {
+              select: {
+                verificationStatus: true,
+              },
+            },
+          },
+        },
       },
     }),
     prisma.listing.count({
@@ -766,6 +775,11 @@ export async function getPublishedListings(
     listings: listings.map((listing) => ({
       ...listing,
       images: withImageUrls(listing.images),
+      seller: {
+        name: "MUT student",
+        verified:
+          listing.seller.studentProfile?.verificationStatus === VerificationStatus.APPROVED,
+      },
     })),
     meta: {
       page: input.page,

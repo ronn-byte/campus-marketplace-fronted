@@ -126,6 +126,7 @@ test("public listing search supports individual and combined filters without byp
   const broadSearch = await fetchListings("?q=physics");
   const titles = broadSearch.json().items.map((item: { title: string }) => item.title);
   assert.deepEqual(titles.sort(), ["Green Physics Textbook"]);
+  assert.equal(broadSearch.json().items[0]?.seller.verified, true);
 });
 
 test("public listing sorting and pagination use filtered results", async () => {

@@ -36,8 +36,6 @@ export const previewListings = [
   },
 ];
 
-const listingImageFallback = "https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=900&q=80";
-
 export async function getListings(params = {}) {
   const { data } = await apiClient.get("/listings", {
     params: { page: 1, pageSize: 20, ...params },
@@ -50,13 +48,11 @@ export async function getListings(params = {}) {
 
   return {
     items: items.map((listing) => {
-      const imageUrl = (
-        Array.isArray(listing.images) && listing.images.length > 0 && typeof listing.images[0].url === "string"
-          ? listing.images[0].url
-          : typeof listing.imageUrl === "string" && /^https?:\/\//i.test(listing.imageUrl)
-            ? listing.imageUrl
-            : listingImageFallback
-      );
+      const imageUrl = Array.isArray(listing.images) && typeof listing.images[0]?.url === "string"
+        ? listing.images[0].url
+        : typeof listing.imageUrl === "string" && /^https?:\/\//i.test(listing.imageUrl)
+          ? listing.imageUrl
+          : null;
 
       return {
         ...listing,
@@ -64,9 +60,12 @@ export async function getListings(params = {}) {
           ? listing.category
           : listing.category?.name || "General",
         imageUrl,
-        seller: listing.seller || { name: "MUT student", verified: true },
-        condition: listing.condition || "Good",
-        location: listing.location || "Main campus",
+        seller: {
+          name: listing.seller?.name || "MUT student",
+          verified: listing.seller?.verified === true,
+        },
+        condition: listing.condition || null,
+        location: listing.location || null,
         price: Number(listing.price ?? 0),
       };
     }),
@@ -82,11 +81,9 @@ export async function getListingById(id) {
     throw new Error("The listing response was empty.");
   }
 
-  const imageUrl = (
-    Array.isArray(listing.images) && listing.images.length > 0 && typeof listing.images[0].url === "string"
-      ? listing.images[0].url
-      : listingImageFallback
-  );
+  const imageUrl = Array.isArray(listing.images) && typeof listing.images[0]?.url === "string"
+    ? listing.images[0].url
+    : "https://images.unsplash.com/photo-1524758631624-e2822e304c36?auto=format&fit=crop&w=900&q=80";
 
   return {
     ...listing,
