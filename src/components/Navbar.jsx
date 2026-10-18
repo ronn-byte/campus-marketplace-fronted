@@ -47,8 +47,8 @@ export default function Navbar() {
     <nav className="site-nav" aria-label="Main navigation">
       <div className="site-nav__inner">
         <Link to="/" className="brand" aria-label="MUT Market home">
-          <span className="brand__mark">M</span>
-          <span><strong>MUT</strong> Market</span>
+          <img className="brand__logo" src="/assets/mut-official-logo.png" alt="Murang’a University of Technology" />
+          <span className="brand__market">Market</span>
         </Link>
         <div className="site-nav__links">
           <NavLink to="/" end className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>Explore</NavLink>

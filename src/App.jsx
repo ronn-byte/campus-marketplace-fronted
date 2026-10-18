@@ -13,15 +13,17 @@ import Profile from "./pages/Profile.jsx";
 import Settings from "./pages/Settings.jsx";
 import Navbar from "./components/Navbar.jsx";
 import { AuthProvider } from "./context/AuthContext.jsx";
+import { FeedbackProvider } from "./context/FeedbackContext.jsx";
 import ResetPassword from "./pages/ResetPassword";
 
 function App() {
   return (
     <BrowserRouter>
-      <AuthProvider>
-        <Navbar />
-        <main>
-          <Routes>
+      <FeedbackProvider>
+        <AuthProvider>
+          <Navbar />
+          <main>
+            <Routes>
             <Route path="/" element={<Home />} />
             <Route path="/post-item" element={<PostItem />} />
             <Route path="/login" element={<Login />} />
@@ -36,9 +38,10 @@ function App() {
             <Route path="/verify-student" element={<VerifyStudent />} />
             <Route path="/verify-email" element={<VerifyEmail />} />
             <Route path="/verify-university-email" element={<VerifyEmail />} />
-          </Routes>
-        </main>
-      </AuthProvider>
+            </Routes>
+          </main>
+        </AuthProvider>
+      </FeedbackProvider>
     </BrowserRouter>
   );
 }

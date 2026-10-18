@@ -3,17 +3,21 @@ import { Link } from "react-router-dom";
 import Button from "../components/Button";
 import { useAuth } from "../hooks/useAuth";
 import apiClient, { getApiErrorMessage } from "../services/apiClient";
+import InlineSpinner from "../components/InlineSpinner";
+import { useFeedback } from "../hooks/useFeedback";
+import { classifyApiError } from "../services/apiErrors";
+import { runWithLoading } from "../services/asyncOperation";
 
 export default function VerifyStudent() {
   const { user, isLoading: authLoading } = useAuth();
   const userId = user?.id;
+  const { showFeedback, setBlockingLabel } = useFeedback();
   const [method, setMethod] = useState("UNIVERSITY_EMAIL");
   const [registrationNumber, setRegistrationNumber] = useState("");
   const [verification, setVerification] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
   const [reload, setReload] = useState(0);
 
   useEffect(() => {
@@ -58,23 +62,32 @@ export default function VerifyStudent() {
   const handleSubmit = async (event) => {
     event.preventDefault();
     setError("");
-    setMessage("");
-    setSaving(true);
-
-    try {
-      const { data } = await apiClient.post("/verification", {
-        method,
-        registrationNumber: registrationNumber.trim(),
-      });
-      setVerification(data);
-      setMessage(method === "UNIVERSITY_EMAIL"
-        ? "We sent a verification link to the MUT student email address associated with your registration number."
-        : "Your student verification request has been submitted for review.");
-    } catch (submitError) {
-      setError(getApiErrorMessage(submitError));
-    } finally {
-      setSaving(false);
-    }
+    if (saving) return;
+    await runWithLoading(async () => {
+      setError("");
+      try {
+        const { data } = await apiClient.post("/verification", {
+          method,
+          registrationNumber: registrationNumber.trim(),
+        });
+        setVerification(data);
+        showFeedback({
+          type: "success",
+          title: method === "UNIVERSITY_EMAIL" ? "Check your student inbox" : "Request submitted",
+          message: method === "UNIVERSITY_EMAIL"
+            ? "We sent a verification link to the MUT student email address associated with your registration number."
+            : "Your student verification request has been submitted for review.",
+          action: { label: "Back to profile", to: "/profile" },
+        });
+      } catch (submitError) {
+        const result = classifyApiError(submitError);
+        if (result.kind === "validation") setError(result.message);
+        else showFeedback({ type: "error", ...result });
+      }
+    }, (loadingNow) => {
+      setSaving(loadingNow);
+      setBlockingLabel(loadingNow ? "Submitting student verification…" : "");
+    });
   };
 
   const status = verification?.status;
@@ -88,7 +101,6 @@ export default function VerifyStudent() {
         <p className="muted">Verification is only needed when you're ready to create listings and sell. You can continue browsing, buying, and contacting sellers without it.</p>
 
         {error && <div className="form-alert" role="alert">{error}</div>}
-        {message && <div className="form-success" role="status">{message}</div>}
 
         {error && !verification ? (
           <div className="verification-notice">
@@ -141,7 +153,7 @@ export default function VerifyStudent() {
                 </span>
               </div>
               <Button type="submit" disabled={saving || !canSubmit}>
-                {saving ? "Submitting..." : status === "REJECTED" ? "Resubmit verification" : "Submit verification"}
+                {saving ? <><InlineSpinner label="Submitting verification…" announce={false} /> Submitting…</> : status === "REJECTED" ? "Resubmit verification" : "Submit verification"}
               </Button>
             </form>
           </>

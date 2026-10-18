@@ -1,11 +1,16 @@
+import { createHash } from "node:crypto";
 import sharp from "sharp";
 import type { Metadata } from "sharp";
 
 import {
+  AccountStatus,
   ListingCondition,
   ListingInquiryStatus,
   ListingStatus,
+  Role,
+  VerificationStatus,
 } from "@prisma/client";
+import { Prisma } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 import { prisma } from "../../lib/prisma.js";
 import {
@@ -46,6 +51,18 @@ type PublishListingInput = {
 type UpdateListingInput = {
   [Key in keyof CreateListingInput]?: CreateListingInput[Key] | undefined;
 };
+
+const eligiblePublishedListingWhere = {
+  status: ListingStatus.PUBLISHED,
+  category: { is: { isActive: true } },
+  seller: {
+    is: {
+      role: Role.STUDENT,
+      accountStatus: AccountStatus.ACTIVE,
+      studentProfile: { is: { verificationStatus: VerificationStatus.APPROVED } },
+    },
+  },
+} satisfies Prisma.ListingWhereInput;
 
 async function normalizeListingImage(
   buffer: Buffer,
@@ -205,8 +222,9 @@ export async function addListingImages(
   listingId: string,
   sellerId: string,
   files: ListingImageUpload[],
+  uploadBatchId?: string,
 ) {
-  await assertSellerAuthorized(sellerId);
+  await assertDraftListingImageUpload(listingId, sellerId);
 
   if (files.length === 0) {
     throw new AppError(
@@ -224,15 +242,180 @@ export async function addListingImages(
     );
   }
 
-  const listing = await prisma.listing.findUnique({
+  const listing = await prisma.listing.findUniqueOrThrow({
     where: { id: listingId },
-    select: { id: true, sellerId: true, status: true },
+    select: { id: true },
   });
 
+  const uploadedObjectKeys: string[] = [];
+  let transactionStarted = false;
+
+  const records: {
+    listingId: string;
+    objectKey: string;
+    sortOrder: number;
+    processingStatus: "READY";
+    uploadBatchId: string | null;
+    uploadBatchIndex: number | null;
+    contentSha256: string;
+  }[] = [];
+
+  let nextSortOrder = 0;
+  let duplicateBatch = false;
+  try {
+    for (const [index, file] of files.entries()) {
+      const mimeType = file.mimetype?.toLowerCase();
+      if (!mimeType || !ALLOWED_LISTING_IMAGE_TYPES.has(mimeType)) {
+        throw new AppError(
+          422,
+          "INVALID_IMAGE_TYPE",
+          "Only JPEG, PNG, and WebP images are allowed.",
+        );
+      }
+
+      const buffer = file.buffer;
+      if (
+        buffer.byteLength === 0 ||
+        buffer.byteLength > MAX_LISTING_IMAGE_BYTES
+      ) {
+        throw new AppError(
+          422,
+          "INVALID_IMAGE_SIZE",
+          "Each image must not exceed 5 MB.",
+        );
+      }
+
+      const normalizedBuffer = await normalizeListingImage(buffer, mimeType);
+      const objectKey = createListingObjectKey(listingId, mimeType);
+      await writeListingImageFile(objectKey, normalizedBuffer);
+      uploadedObjectKeys.push(objectKey);
+
+      records.push({
+        listingId: listing.id,
+        objectKey,
+        sortOrder: index,
+        processingStatus: "READY",
+        uploadBatchId: uploadBatchId ?? null,
+        uploadBatchIndex: uploadBatchId ? index : null,
+        contentSha256: createHash("sha256").update(normalizedBuffer).digest("hex"),
+      });
+    }
+
+    transactionStarted = true;
+    await prisma.$transaction(async (transaction) => {
+      // Serialize concurrent uploads for this listing before counting images
+      // and assigning sort positions. The lock is held only for DB work.
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM listings WHERE id = ${listing.id}::uuid FOR UPDATE
+      `;
+
+      const current = await transaction.listing.findUnique({
+        where: { id: listing.id },
+        select: { sellerId: true, status: true },
+      });
+      if (!current || current.sellerId !== sellerId) {
+        throw new AppError(404, "LISTING_NOT_FOUND", "Draft not found.");
+      }
+      if (current.status !== ListingStatus.DRAFT) {
+        throw new AppError(
+          409,
+          "INVALID_LISTING_STATUS",
+          "Only draft listings can receive images.",
+        );
+      }
+
+      if (uploadBatchId) {
+        const previousBatch = await transaction.listingImage.findMany({
+          where: { listingId: listing.id, uploadBatchId },
+          orderBy: { uploadBatchIndex: "asc" },
+          select: {
+            id: true,
+            objectKey: true,
+            sortOrder: true,
+            processingStatus: true,
+            uploadBatchIndex: true,
+            contentSha256: true,
+          },
+        });
+        if (previousBatch.length > 0) {
+          const matches =
+            previousBatch.length === records.length &&
+            previousBatch.every((image, index) =>
+              image.uploadBatchIndex === index &&
+              image.contentSha256 === records[index]?.contentSha256,
+            );
+          if (!matches) {
+            throw new AppError(
+              409,
+              "UPLOAD_RETRY_MISMATCH",
+              "This upload retry does not match the previously saved image batch.",
+            );
+          }
+          duplicateBatch = true;
+          return;
+        }
+      }
+
+      const existingCount = await transaction.listingImage.count({
+        where: { listingId: listing.id },
+      });
+      if (existingCount + files.length > MAX_LISTING_IMAGES_PER_LISTING) {
+        throw new AppError(
+          422,
+          "VALIDATION_ERROR",
+          `A listing may contain up to ${MAX_LISTING_IMAGES_PER_LISTING} images.`,
+        );
+      }
+      nextSortOrder = existingCount;
+      await transaction.listingImage.createMany({
+        data: records.map((record) => ({
+          ...record,
+          sortOrder: existingCount + record.sortOrder,
+        })),
+      });
+    });
+  } catch (error) {
+    if (uploadedObjectKeys.length > 0) {
+      // A failed commit response can be ambiguous. Retain files on database
+      // errors to avoid deleting files referenced by a transaction that may
+      // have committed; pre-transaction validation/write failures are safe
+      // to clean up.
+      if (!transactionStarted || error instanceof AppError) {
+        await deleteListingImageFiles(uploadedObjectKeys);
+      }
+    }
+
+    throw error;
+  }
+
+  if (duplicateBatch && uploadedObjectKeys.length > 0) {
+    await deleteListingImageFiles(uploadedObjectKeys);
+  }
+
+  // This query is after the commit boundary. If readback fails, keep the
+  // committed rows and their files; the client can reload the draft.
+  const images = await prisma.listingImage.findMany({
+    where: uploadBatchId
+      ? { listingId: listing.id, uploadBatchId }
+      : { listingId: listing.id, sortOrder: { gte: nextSortOrder } },
+    orderBy: { sortOrder: "asc" },
+    select: { id: true, objectKey: true, sortOrder: true, processingStatus: true },
+  });
+  return withImageUrls(images);
+}
+
+export async function assertDraftListingImageUpload(
+  listingId: string,
+  sellerId: string,
+) {
+  await assertSellerAuthorized(sellerId);
+  const listing = await prisma.listing.findUnique({
+    where: { id: listingId },
+    select: { sellerId: true, status: true },
+  });
   if (!listing) {
     throw new AppError(404, "LISTING_NOT_FOUND", "Listing not found.");
   }
-
   if (listing.sellerId !== sellerId) {
     throw new AppError(
       403,
@@ -240,100 +423,12 @@ export async function addListingImages(
       "You do not have permission to upload images for this listing.",
     );
   }
-
-  if (
-    listing.status !== ListingStatus.DRAFT &&
-    listing.status !== ListingStatus.PUBLISHED
-  ) {
+  if (listing.status !== ListingStatus.DRAFT) {
     throw new AppError(
       409,
       "INVALID_LISTING_STATUS",
-      "Only draft or published listings can receive images.",
+      "Only draft listings can receive images.",
     );
-  }
-
-  const existingCount = await prisma.listingImage.count({
-    where: { listingId: listing.id },
-  });
-
-  if (existingCount + files.length > MAX_LISTING_IMAGES_PER_LISTING) {
-    throw new AppError(
-      422,
-      "VALIDATION_ERROR",
-      `A listing may contain up to ${MAX_LISTING_IMAGES_PER_LISTING} images.`,
-    );
-  }
-
-  const uploadedObjectKeys: string[] = [];
-
-  const records: {
-    listingId: string;
-    objectKey: string;
-    sortOrder: number;
-    processingStatus: "READY";
-  }[] = [];
-
-  try {
-    for (const [index, file] of files.entries()) {
-  const mimeType = file.mimetype?.toLowerCase();
-
-  if (!mimeType || !ALLOWED_LISTING_IMAGE_TYPES.has(mimeType)) {
-    throw new AppError(
-      422,
-      "INVALID_IMAGE_TYPE",
-      "Only JPEG, PNG, and WebP images are allowed.",
-    );
-  }
-
-     const buffer = file.buffer;
-
-  if (
-    buffer.byteLength === 0 ||
-    buffer.byteLength > MAX_LISTING_IMAGE_BYTES
-  ) {
-    throw new AppError(
-      422,
-      "INVALID_IMAGE_SIZE",
-      "Each image must not exceed 5 MB.",
-    );
-  }
-
-    const normalizedBuffer = await normalizeListingImage(buffer, mimeType);
-  const objectKey = createListingObjectKey(listingId, mimeType);
-
-  await writeListingImageFile(objectKey, normalizedBuffer);
-  uploadedObjectKeys.push(objectKey);
-
-  records.push({
-    listingId: listing.id,
-    objectKey,
-    sortOrder: existingCount + index,
-    processingStatus: "READY",
-  });
-}
-
-    await prisma.listingImage.createMany({
-      data: records,
-    });
-
-    const images = await prisma.listingImage.findMany({
-      where: { listingId: listing.id },
-      orderBy: { sortOrder: "asc" },
-      select: {
-        id: true,
-        objectKey: true,
-        sortOrder: true,
-        processingStatus: true,
-      },
-    });
-
-    return withImageUrls(images);
-  } catch (error) {
-    if (uploadedObjectKeys.length > 0) {
-      await deleteListingImageFiles(uploadedObjectKeys);
-    }
-
-    throw error;
   }
 }
 
@@ -584,7 +679,7 @@ export async function getPublishedListings(
 
   const [listings, total] = await prisma.$transaction([
     prisma.listing.findMany({
-      where: { status: ListingStatus.PUBLISHED },
+      where: eligiblePublishedListingWhere,
       orderBy: { createdAt: "desc" },
       skip,
       take: input.pageSize,
@@ -617,7 +712,7 @@ export async function getPublishedListings(
       },
     }),
     prisma.listing.count({
-      where: { status: ListingStatus.PUBLISHED },
+      where: eligiblePublishedListingWhere,
     }),
   ]);
 
@@ -635,14 +730,15 @@ export async function getPublishedListings(
   };
 }
 
-export async function getPublicListing(listingId: string) {
+export async function getPublicListing(listingId: string, viewerId?: string) {
   const listing = await prisma.listing.findFirst({
     where: {
       id: listingId,
-      status: ListingStatus.PUBLISHED,
+      ...eligiblePublishedListingWhere,
     },
     select: {
       id: true,
+      sellerId: true,
       title: true,
       description: true,
       price: true,
@@ -705,6 +801,7 @@ export async function getPublicListing(listingId: string) {
       verified:
         listing.seller.studentProfile?.verificationStatus === "APPROVED",
     },
+    isOwner: Boolean(viewerId && listing.sellerId === viewerId),
   };
 }
 
@@ -828,9 +925,9 @@ export async function createListingInquiry(
   const listing = await prisma.listing.findFirst({
     where: {
       id: listingId,
-      status: ListingStatus.PUBLISHED,
+      ...eligiblePublishedListingWhere,
     },
-    select: { id: true },
+    select: { id: true, sellerId: true },
   });
 
   if (!listing) {
@@ -838,6 +935,14 @@ export async function createListingInquiry(
       404,
       "LISTING_NOT_FOUND",
       "Listing not found or is no longer available.",
+    );
+  }
+
+  if (listing.sellerId === buyerId) {
+    throw new AppError(
+      403,
+      "FORBIDDEN",
+      "You cannot inquire about your own listing.",
     );
   }
 
@@ -1026,14 +1131,11 @@ export async function updateListing(
     );
   }
 
-  if (
-    existing.status !== ListingStatus.DRAFT &&
-    existing.status !== ListingStatus.PUBLISHED
-  ) {
+  if (existing.status !== ListingStatus.DRAFT) {
     throw new AppError(
       409,
       "INVALID_LISTING_STATUS",
-      "Only draft or published listings can be updated.",
+      "Only draft listings can be updated.",
     );
   }
 
@@ -1056,8 +1158,12 @@ export async function updateListing(
     }
   }
 
-  const listing = await prisma.listing.update({
-    where: { id: existing.id },
+  const updateResult = await prisma.listing.updateMany({
+    where: {
+      id: existing.id,
+      sellerId,
+      status: ListingStatus.DRAFT,
+    },
     data: {
       ...(input.categoryId === undefined
         ? {}
@@ -1072,6 +1178,18 @@ export async function updateListing(
         : { condition: input.condition }),
       ...(input.location === undefined ? {} : { location: input.location }),
     },
+  });
+
+  if (updateResult.count !== 1) {
+    throw new AppError(
+      409,
+      "INVALID_LISTING_STATUS",
+      "Only draft listings can be updated.",
+    );
+  }
+
+  const listing = await prisma.listing.findUniqueOrThrow({
+    where: { id: existing.id },
     select: {
       id: true,
       title: true,
@@ -1169,15 +1287,8 @@ export async function removeListing(
     );
   }
 
-  const listingImages = await prisma.listingImage.findMany({
-    where: { listingId: existing.id },
-    select: { objectKey: true },
-  });
-
-  await deleteListingImageFiles(
-    listingImages.map((image) => image.objectKey),
-  );
-
+  // Removal is a soft status transition. Keep image files because the image
+  // rows remain attached to the retained listing record.
   return prisma.listing.findUniqueOrThrow({
     where: { id: existing.id },
     select: {

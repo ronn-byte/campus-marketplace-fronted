@@ -3,16 +3,20 @@ import { Link } from "react-router-dom";
 import Button from "../components/Button";
 import { useAuth } from "../hooks/useAuth";
 import apiClient, { getApiErrorMessage } from "../services/apiClient";
+import InlineSpinner from "../components/InlineSpinner";
+import { useFeedback } from "../hooks/useFeedback";
+import { classifyApiError } from "../services/apiErrors";
+import { runWithLoading } from "../services/asyncOperation";
 
 export default function Settings() {
   const { user, isLoading: authLoading } = useAuth();
   const userId = user?.id;
+  const { showFeedback, setBlockingLabel } = useFeedback();
   const [verification, setVerification] = useState(null);
   const [verificationLoading, setVerificationLoading] = useState(true);
   const [verificationError, setVerificationError] = useState("");
   const [verificationReload, setVerificationReload] = useState(0);
   const [resending, setResending] = useState(false);
-  const [emailMessage, setEmailMessage] = useState("");
   const [emailError, setEmailError] = useState("");
 
   useEffect(() => {
@@ -55,18 +59,21 @@ export default function Settings() {
   }
 
   const handleResendVerification = async () => {
-    setResending(true);
-    setEmailMessage("");
+    if (resending) return;
     setEmailError("");
-
-    try {
-      await apiClient.post("/auth/resend-verification", { email: user.email });
-      setEmailMessage("If your account is eligible, a verification email will be sent shortly.");
-    } catch (error) {
-      setEmailError(getApiErrorMessage(error));
-    } finally {
-      setResending(false);
-    }
+    await runWithLoading(async () => {
+      try {
+        await apiClient.post("/auth/resend-verification", { email: user.email });
+        showFeedback({ type: "success", title: "Request received", message: "If your account is eligible, a verification email will be sent shortly." });
+      } catch (error) {
+        const result = classifyApiError(error);
+        if (result.kind === "validation") setEmailError(result.message);
+        else showFeedback({ type: "error", ...result });
+      }
+    }, (loading) => {
+      setResending(loading);
+      setBlockingLabel(loading ? "Sending verification request…" : "");
+    });
   };
 
   const studentStatus = verification?.status;
@@ -100,9 +107,8 @@ export default function Settings() {
           {!user.emailVerifiedAt && (
             <div className="settings-actions">
               <Button type="button" variant="secondary" onClick={handleResendVerification} disabled={resending}>
-                {resending ? "Sending..." : "Resend verification email"}
+              {resending ? <><InlineSpinner label="Sending verification request…" announce={false} /> Sending…</> : "Resend verification email"}
               </Button>
-              {emailMessage && <p className="form-success" role="status">{emailMessage}</p>}
               {emailError && <p className="form-alert" role="alert">{emailError}</p>}
             </div>
           )}

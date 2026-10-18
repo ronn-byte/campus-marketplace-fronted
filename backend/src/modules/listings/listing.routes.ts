@@ -1,7 +1,8 @@
 
 import type { FastifyInstance } from "fastify";
+import { z } from "zod";
 import { AppError } from "../../app/errors.js";
-import { requireAuth } from "../../middleware/auth.js";
+import { optionalAuth, requireAuth } from "../../middleware/auth.js";
 import {
   createListingInquirySchema,
   createListingSchema,
@@ -14,6 +15,7 @@ import {
 } from "./listing.schemas.js";
 
 import {
+  assertDraftListingImageUpload,
   addListingImages,
   createListingInquiry,
   createListing,
@@ -153,7 +155,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
 
   // Public listing details are available only through the service's
   // published-listing checks.
-  app.get("/listings/:listingId", async (request, reply) => {
+  app.get("/listings/:listingId", { preHandler: optionalAuth }, async (request, reply) => {
     const result = listingParamsSchema.safeParse(request.params);
 
     if (!result.success) {
@@ -164,7 +166,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
       );
     }
 
-    const listing = await getPublicListing(result.data.listingId);
+    const listing = await getPublicListing(result.data.listingId, request.user?.id);
     return reply.status(200).send({ listing });
   });
 
@@ -192,7 +194,25 @@ export async function registerListingRoutes(app: FastifyInstance) {
         );
       }
 
+      const uploadBatchHeader = request.headers["idempotency-key"];
+      const uploadBatch = uploadBatchHeader === undefined
+        ? undefined
+        : z.string().uuid().safeParse(uploadBatchHeader);
+      if (uploadBatchHeader !== undefined && !uploadBatch?.success) {
+        throw new AppError(
+          400,
+          "BAD_REQUEST",
+          "The upload retry key must be a UUID.",
+        );
+      }
+
+      // Reject unverified, non-owner, and non-draft uploads before buffering
+      // any multipart content in memory.
+      await assertDraftListingImageUpload(params.data.listingId, user.id);
+
       const files: Array<{ mimetype: string; buffer: Buffer }> = [];
+      let aggregateBytes = 0;
+      const maxAggregateBytes = 5 * 1024 * 1024 * 8;
 
       for await (const part of request.parts()) {
         if (part.type !== "file") {
@@ -203,9 +223,19 @@ export async function registerListingRoutes(app: FastifyInstance) {
           );
         }
 
+        const buffer = await part.toBuffer();
+        aggregateBytes += buffer.byteLength;
+        if (aggregateBytes > maxAggregateBytes) {
+          throw new AppError(
+            413,
+            "PAYLOAD_TOO_LARGE",
+            "The combined image size exceeds the allowed upload size.",
+          );
+        }
+
         files.push({
           mimetype: part.mimetype,
-          buffer: await part.toBuffer(),
+          buffer,
         });
       }
 
@@ -213,6 +243,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
         params.data.listingId,
         user.id,
         files,
+        uploadBatch?.success ? uploadBatch.data : undefined,
       );
 
       return reply.status(201).send({ images });

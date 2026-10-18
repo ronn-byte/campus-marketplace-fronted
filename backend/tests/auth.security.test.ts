@@ -35,7 +35,7 @@ before(() => {
     return {
       data: { id: "mock-email-id" },
       error: null,
-    } as any;
+    } as Awaited<ReturnType<typeof resend.emails.send>>;
   };
 });
 
@@ -129,6 +129,104 @@ test("Registration succeeds and remains pending when account verification email 
     await assert.rejects(
       () => assertSellerAuthorized(user.id),
       (error: unknown) => error instanceof AppError && error.code === "SELLER_VERIFICATION_REQUIRED",
+    );
+  } finally {
+    resend.emails.send = originalSend;
+    await cleanupTestUser(email);
+  }
+});
+
+test("duplicate registration email returns a conflict without creating another account", async () => {
+  const email = "test-registration-duplicate@example.com";
+  await cleanupTestUser(email);
+
+  try {
+    await register({
+      email,
+      password: "test-password-12345",
+      displayName: "Test User",
+      verificationMethod: undefined,
+      registrationNumber: undefined,
+    });
+
+    await assert.rejects(
+      () => register({
+        email,
+        password: "another-test-password-12345",
+        displayName: "Duplicate User",
+        verificationMethod: undefined,
+        registrationNumber: undefined,
+      }),
+      (error: unknown) => error instanceof AppError && error.code === "EMAIL_ALREADY_EXISTS",
+    );
+
+    assert.equal(await prisma.user.count({ where: { email } }), 1);
+  } finally {
+    await cleanupTestUser(email);
+  }
+});
+
+test("registration transaction rolls back user and profile when student data conflicts", async () => {
+  const existingEmail = "test-registration-unique-student@example.com";
+  const rejectedEmail = "test-registration-rollback@example.com";
+  const registrationNumber = "ROLLBACK123456";
+  await cleanupTestUser(existingEmail);
+  await cleanupTestUser(rejectedEmail);
+
+  try {
+    await register({
+      email: existingEmail,
+      password: "test-password-12345",
+      displayName: "Existing Student",
+      verificationMethod: VerificationMethod.MANUAL_STUDENT,
+      registrationNumber,
+    });
+
+    await assert.rejects(
+      () => register({
+        email: rejectedEmail,
+        password: "test-password-12345",
+        displayName: "Duplicate Student",
+        verificationMethod: VerificationMethod.MANUAL_STUDENT,
+        registrationNumber,
+      }),
+      (error: unknown) => error instanceof AppError && error.code === "REGISTRATION_CONFLICT",
+    );
+
+    assert.equal(await prisma.user.count({ where: { email: rejectedEmail } }), 0);
+    assert.equal(await prisma.studentProfile.count({ where: { user: { email: rejectedEmail } } }), 0);
+  } finally {
+    await cleanupTestUser(existingEmail);
+    await cleanupTestUser(rejectedEmail);
+  }
+});
+
+test("university verification email failure does not fail account registration", async () => {
+  const email = "test-registration-university-email-failure@example.com";
+  await cleanupTestUser(email);
+
+  const originalSend = resend.emails.send;
+  resend.emails.send = async () => {
+    throw new Error("Email provider unavailable");
+  };
+
+  try {
+    const user = await register({
+      email,
+      password: "test-password-12345",
+      displayName: "Test Student",
+      verificationMethod: VerificationMethod.UNIVERSITY_EMAIL,
+      registrationNumber: "UNIVERSITY123456",
+    });
+
+    const records = await prisma.emailVerificationToken.findMany({
+      where: { userId: user.id },
+      orderBy: { purpose: "asc" },
+    });
+    assert.equal(records.length, 2);
+    assert.deepEqual(
+      new Set(records.map((record) => record.purpose)),
+      new Set([EmailVerificationPurpose.ACCOUNT_EMAIL, EmailVerificationPurpose.UNIVERSITY_EMAIL]),
     );
   } finally {
     resend.emails.send = originalSend;

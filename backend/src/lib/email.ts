@@ -25,7 +25,7 @@ export async function sendVerificationEmail(
   });
 
   if (error) {
-    console.error("Verification email failed:", error);
+    console.error("Verification email provider returned an error.");
     throw new Error("Verification email could not be sent.");
   }
 
@@ -53,7 +53,7 @@ export async function sendUniversityVerificationEmail(
   });
 
   if (error) {
-    console.error("University verification email failed:", error);
+    console.error("University verification email provider returned an error.");
     throw new Error("University verification email could not be sent.");
   }
 
@@ -82,7 +82,7 @@ export async function sendPasswordResetEmail(
   });
 
   if (error) {
-    console.error("Password reset email failed:", error);
+    console.error("Password reset email provider returned an error.");
     throw new Error("Password reset email could not be sent.");
   }
 

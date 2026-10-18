@@ -89,6 +89,7 @@ export async function getListingById(id) {
     ...listing,
     category: listing.category?.name || "General",
     imageUrl,
+    isOwner: Boolean(listing.isOwner),
     seller: {
       name: listing.seller?.name || "MUT student",
       verified: Boolean(listing.seller?.verified),
@@ -113,13 +114,14 @@ export async function createListing(payload) {
   return data.listing;
 }
 
-export async function uploadListingImages(id, files) {
+export async function uploadListingImages(id, files, idempotencyKey) {
   const payload = new FormData();
   files.forEach((file) => payload.append("images", file));
 
   const { data } = await apiClient.post(
     `/listings/${encodeURIComponent(id)}/images`,
     payload,
+    { headers: { "Idempotency-Key": idempotencyKey } },
   );
   if (
     !Array.isArray(data?.images) ||

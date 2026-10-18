@@ -1,7 +1,9 @@
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import Button from "../components/Button";
+import InlineSpinner from "../components/InlineSpinner";
+import { useFeedback } from "../hooks/useFeedback";
 import { getApiErrorMessage } from "../services/apiClient";
 import {
   createListing,
@@ -11,6 +13,8 @@ import {
   uploadListingImages,
   publishListing,
 } from "../services/listingService";
+
+const MAX_LISTING_IMAGES = 8;
 
 const initialForm = {
   title: "",
@@ -26,6 +30,7 @@ const conditionValues = {
   "Like new": "LIKE_NEW",
   Good: "GOOD",
   Fair: "FAIR",
+  Used: "USED",
 };
 
 const conditionLabels = {
@@ -33,7 +38,7 @@ const conditionLabels = {
   LIKE_NEW: "Like new",
   GOOD: "Good",
   FAIR: "Fair",
-  USED: "Fair",
+  USED: "Used",
 };
 
 function toListingPayload(form) {
@@ -62,6 +67,7 @@ function toFormValues(listing) {
 }
 
 export default function PostItem() {
+  const { setBlockingLabel } = useFeedback();
   const [searchParams] = useSearchParams();
   const editId = searchParams.get("edit");
 
@@ -79,6 +85,8 @@ export default function PostItem() {
     message: "",
     error: "",
   });
+  const [operationLabel, setOperationLabel] = useState("");
+  const uploadBatchIdRef = useRef(null);
 
   useEffect(() => {
     let active = true;
@@ -174,8 +182,25 @@ export default function PostItem() {
   const handleImageChange = (event) => {
     const selectedFiles = Array.from(event.target.files ?? []);
     const input = event.target;
+    if (uploadBatchIdRef.current) {
+      setStatus((current) => ({
+        ...current,
+        error: "Retry the saved upload with the same selected images, or reopen the draft to start a new upload.",
+        message: "",
+      }));
+      input.value = "";
+      return;
+    }
+    const remaining = Math.max(0, MAX_LISTING_IMAGES - savedImages.length - images.length);
 
-    setImages((current) => [...current, ...selectedFiles]);
+    setImages((current) => [...current, ...selectedFiles.slice(0, remaining)]);
+    if (selectedFiles.length > remaining) {
+      setStatus((current) => ({
+        ...current,
+        error: `A listing may contain up to ${MAX_LISTING_IMAGES} images. You can add ${remaining} more.`,
+        message: "",
+      }));
+    }
 
     // Allow choosing the same file again after removing it.
     input.value = "";
@@ -193,6 +218,9 @@ export default function PostItem() {
     if (status.loading || loadingDraft) return;
 
     setStatus({ loading: true, message: "", error: "" });
+    const initialOperation = "Saving your draft…";
+    setOperationLabel(initialOperation);
+    setBlockingLabel(initialOperation);
 
     try {
       const payload = toListingPayload(form);
@@ -212,8 +240,15 @@ export default function PostItem() {
       let uploadedImages = [];
 
       if (images.length > 0) {
+        setOperationLabel("Uploading images…");
+        setBlockingLabel("Uploading images…");
         try {
-          uploadedImages = await uploadListingImages(listing.id, images);
+          uploadBatchIdRef.current ??= crypto.randomUUID();
+          uploadedImages = await uploadListingImages(
+            listing.id,
+            images,
+            uploadBatchIdRef.current,
+          );
         } catch (error) {
           setStatus({
             loading: false,
@@ -222,9 +257,12 @@ export default function PostItem() {
               `Your draft has been saved (ID: ${listing.id}), but the image upload failed. ` +
               `${getApiErrorMessage(error)} Your selected images and form details have been kept so you can retry.`,
           });
+          setOperationLabel("");
+          setBlockingLabel("");
           return;
         }
 
+        uploadBatchIdRef.current = null;
         setSavedImages((current) => [...current, ...uploadedImages]);
         setImages([]);
       }
@@ -245,12 +283,16 @@ export default function PostItem() {
             : "Your draft has been saved. Review everything before publishing.",
         error: "",
       });
+      setOperationLabel("");
+      setBlockingLabel("");
     } catch (error) {
       setStatus({
         loading: false,
         message: "",
         error: getApiErrorMessage(error),
       });
+      setOperationLabel("");
+      setBlockingLabel("");
     }
   };
 
@@ -265,6 +307,8 @@ export default function PostItem() {
     }
 
     setStatus({ loading: true, message: "", error: "" });
+    setOperationLabel("Publishing listing…");
+    setBlockingLabel("Publishing listing…");
 
     try {
       // Save the latest form values before asking the server to publish.
@@ -282,6 +326,8 @@ export default function PostItem() {
           message: "",
           error: "Save the draft and upload the selected images before publishing.",
         });
+        setOperationLabel("");
+        setBlockingLabel("");
         return;
       }
 
@@ -302,12 +348,16 @@ export default function PostItem() {
           "Your listing has been published. It should now be eligible to appear in Explore.",
         error: "",
       });
+      setOperationLabel("");
+      setBlockingLabel("");
     } catch (error) {
       setStatus({
         loading: false,
         message: "",
         error: getApiErrorMessage(error),
       });
+      setOperationLabel("");
+      setBlockingLabel("");
     }
   };
 
@@ -478,6 +528,7 @@ export default function PostItem() {
               <option value="Like new">Like new</option>
               <option value="Good">Good</option>
               <option value="Fair">Fair</option>
+              <option value="Used">Used</option>
             </select>
           </div>
 
@@ -505,11 +556,10 @@ export default function PostItem() {
               accept="image/jpeg,image/png,image/webp"
               multiple
               onChange={handleImageChange}
-              disabled={status.loading || loadingDraft || isPublished}
+              disabled={status.loading || loadingDraft || isPublished || Boolean(uploadBatchIdRef.current)}
             />
             <span className="muted">
-              Use clear images. Choose only JPEG, PNG, or WebP files within the
-              server's size and image-count limits.
+              Use JPEG, PNG, or WebP images up to 5 MB each. {Math.max(0, MAX_LISTING_IMAGES - savedImages.length - images.length)} of {MAX_LISTING_IMAGES} image slots remain.
             </span>
           </div>
 
@@ -547,7 +597,7 @@ export default function PostItem() {
                   <button
                     type="button"
                     onClick={() => removeSelectedImage(index)}
-                    disabled={status.loading}
+                    disabled={status.loading || Boolean(uploadBatchIdRef.current)}
                   >
                     Remove
                   </button>
@@ -567,7 +617,7 @@ export default function PostItem() {
             }
           >
             {status.loading
-              ? "Saving..."
+              ? <><InlineSpinner label={operationLabel} announce={false} /> {operationLabel.replace("…", "")}</>
               : images.length > 0
                 ? "Save draft and upload images"
                 : pendingListing?.id
@@ -582,7 +632,7 @@ export default function PostItem() {
                 onClick={handlePublish}
                 disabled={!canPublish}
               >
-                {status.loading ? "Publishing..." : "Publish listing"}
+                {status.loading ? <><InlineSpinner label="Publishing listing…" announce={false} /> Publishing…</> : "Publish listing"}
               </Button>
 
               {images.length > 0 && (

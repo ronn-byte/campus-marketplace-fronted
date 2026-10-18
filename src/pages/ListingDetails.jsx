@@ -103,6 +103,8 @@ export default function ListingDetails() {
           <div className="listing-detail__seller"><span className="avatar">MS</span><span><strong>{listing.seller.name}</strong><small>{listing.seller.verified ? "Verified student" : "Student seller"}</small></span></div>
           {isAuthLoading ? (
             <p className="muted" role="status">Checking your sign-in status…</p>
+          ) : listing.isOwner ? (
+            <p className="muted" role="status">This is your listing. You cannot inquire about your own item.</p>
           ) : isAuthenticated ? (
             <form onSubmit={handleInquirySubmit}>
               {inquiryState.status === "success" && (

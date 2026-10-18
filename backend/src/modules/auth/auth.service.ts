@@ -45,7 +45,9 @@ export async function register(input: RegisterInput) {
   const isUniversityEmailVerification =
     input.verificationMethod === VerificationMethod.UNIVERSITY_EMAIL &&
     Boolean(registrationNumber);
-  let universityVerificationId: string | undefined;
+  const universityToken = isUniversityEmailVerification
+    ? createOpaqueToken()
+    : undefined;
 
   try {
     const user = await prisma.$transaction(async (transaction) => {
@@ -98,7 +100,18 @@ export async function register(input: RegisterInput) {
             universityEmail: expectedMutStudentEmail(registrationNumber),
           },
         });
-        universityVerificationId = verification.id;
+
+        if (universityToken) {
+          await transaction.emailVerificationToken.create({
+            data: {
+              userId: created.id,
+              purpose: EmailVerificationPurpose.UNIVERSITY_EMAIL,
+              verificationId: verification.id,
+              tokenHash: hashToken(universityToken),
+              expiresAt: addHours(env.EMAIL_VERIFICATION_TTL_HOURS),
+            },
+          });
+        }
       } else {
         studentProfile = await transaction.studentProfile.create({
           data: {
@@ -120,21 +133,11 @@ export async function register(input: RegisterInput) {
       return created;
     });
 
-    if (isUniversityEmailVerification && registrationNumber && universityVerificationId) {
-      const universityToken = createOpaqueToken();
-      await prisma.emailVerificationToken.create({
-        data: {
-          userId: user.id,
-          purpose: EmailVerificationPurpose.UNIVERSITY_EMAIL,
-          verificationId: universityVerificationId,
-          tokenHash: hashToken(universityToken),
-          expiresAt: addHours(env.EMAIL_VERIFICATION_TTL_HOURS),
-        },
-      });
+    if (isUniversityEmailVerification && registrationNumber && universityToken) {
       try {
         await sendUniversityVerificationEmail(expectedMutStudentEmail(registrationNumber), universityToken);
-      } catch (error) {
-        console.error("Registration continued without sending the university verification email.", error);
+      } catch {
+        console.error("University verification email delivery failed; registration completed.");
       }
     }
 
@@ -142,8 +145,8 @@ export async function register(input: RegisterInput) {
     // Accounts remain usable while student verification is pending.
     try {
       await sendVerificationEmail(input.email, rawToken);
-    } catch (error) {
-      console.error("Registration continued without sending the account verification email.", error);
+    } catch {
+      console.error("Account verification email delivery failed; registration completed.");
     }
 
     return toSafeUser(user);
@@ -152,10 +155,25 @@ export async function register(input: RegisterInput) {
       error instanceof Prisma.PrismaClientKnownRequestError &&
       error.code === "P2002"
     ) {
+      const target = error.meta?.target;
+      const targetFields = Array.isArray(target)
+        ? target.map(String)
+        : typeof target === "string"
+          ? [target]
+          : [];
+
+      if (targetFields.some((field) => field.toLowerCase().includes("email"))) {
+        throw new AppError(
+          409,
+          "EMAIL_ALREADY_EXISTS",
+          "An account with this email already exists. Please log in or reset your password.",
+        );
+      }
+
       throw new AppError(
         409,
-        "EMAIL_ALREADY_EXISTS",
-        "An account with this email already exists. Please log in or reset your password.",
+        "REGISTRATION_CONFLICT",
+        "The submitted account or student verification information conflicts with an existing record.",
       );
     }
 
@@ -378,7 +396,12 @@ export async function resendVerification(
 
   // Send the new raw token by email.
   // Only the hash is stored in the database.
-  await sendVerificationEmail(user.email, rawToken);
+  try {
+    await sendVerificationEmail(user.email, rawToken);
+  } catch {
+    // Keep the same public response for eligible and ineligible accounts.
+    console.error("Account verification email delivery failed.");
+  }
 }
 
 export async function requestPasswordReset(
@@ -404,7 +427,12 @@ export async function requestPasswordReset(
     },
   });
 
-  await sendPasswordResetEmail(email, rawToken);
+  try {
+    await sendPasswordResetEmail(email, rawToken);
+  } catch {
+    // Do not reveal account existence through provider failures.
+    console.error("Password reset email delivery failed.");
+  }
 }
 
 export async function resetPassword(

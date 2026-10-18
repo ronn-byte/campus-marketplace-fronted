@@ -15,6 +15,17 @@ export async function requireAuth(request: FastifyRequest): Promise<void> {
   request.sessionId = sessionToken;
 }
 
+export async function optionalAuth(request: FastifyRequest): Promise<void> {
+  const sessionToken = request.cookies[env.SESSION_COOKIE_NAME];
+  if (!sessionToken) return;
+
+  const user = await getSessionUser(hashToken(sessionToken));
+  if (!user) return;
+
+  request.user = user;
+  request.sessionId = sessionToken;
+}
+
 export function requireRole(...roles: Role[]) {
   return async (request: FastifyRequest): Promise<void> => {
     const user = request.user;

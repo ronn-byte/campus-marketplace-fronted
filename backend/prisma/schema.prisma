@@ -178,10 +178,14 @@ model ListingImage {
   objectKey        String                @db.VarChar(500)
   sortOrder        Int                   @default(0)
   processingStatus ImageProcessingStatus @default(PENDING)
+  uploadBatchId    String?               @db.Uuid
+  uploadBatchIndex Int?
+  contentSha256    String?               @db.Char(64)
   createdAt        DateTime              @default(now()) @db.Timestamptz(3)
   listing          Listing               @relation(fields: [listingId], references: [id])
 
   @@unique([listingId, sortOrder])
+  @@unique([listingId, uploadBatchId, uploadBatchIndex])
   @@index([listingId, processingStatus])
   @@map("listing_images")
 }

@@ -140,6 +140,21 @@ test("listing inquiry creation enforces authentication and session identity", as
     assert.equal(response.statusCode, 401);
   });
 
+  await t.test("listing owner cannot inquire about their own published listing", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url,
+      headers: authHeaders(seller.sessionToken),
+      payload: { message: "I am interested in my own listing." },
+    });
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.json().error.code, "FORBIDDEN");
+    assert.equal(
+      await prisma.listingInquiry.count({ where: { listingId: listing.id } }),
+      0,
+    );
+  });
+
   await t.test("authenticated unverified student can create an inquiry", async () => {
     const response = await app.inject({
       method: "POST",
@@ -156,7 +171,7 @@ test("listing inquiry creation enforces authentication and session identity", as
     assert.equal(saved?.buyerId, unverifiedBuyer.user.id);
   });
 
-  await t.test("authenticated verified student can create an inquiry", async () => {
+  await t.test("a different eligible buyer can create an inquiry", async () => {
     const response = await app.inject({
       method: "POST",
       url,
@@ -168,6 +183,7 @@ test("listing inquiry creation enforces authentication and session identity", as
       where: { listingId: listing.id, buyerId: verifiedBuyer.user.id },
     });
     assert.ok(saved);
+    assert.equal(saved.buyerId, verifiedBuyer.user.id);
   });
 
   await t.test("repeat inquiries are allowed", async () => {
@@ -365,6 +381,24 @@ test("listing inquiry retrieval is authenticated, owner-only, and returns safe b
     assert.ok(body.inquiries[0].id);
   });
 
+  await t.test("public listing details only report ownership to the signed-in owner", async () => {
+    const ownerResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/listings/${listing.id}`,
+      headers: authHeaders(seller.sessionToken),
+    });
+    assert.equal(ownerResponse.statusCode, 200);
+    assert.equal(ownerResponse.json().listing.isOwner, true);
+
+    const otherUserResponse = await app.inject({
+      method: "GET",
+      url: `/api/v1/listings/${listing.id}`,
+      headers: authHeaders(otherStudent.sessionToken),
+    });
+    assert.equal(otherUserResponse.statusCode, 200);
+    assert.equal(otherUserResponse.json().listing.isOwner, false);
+  });
+
   await t.test("public listing seller DTO remains limited to safe display fields", async () => {
     const response = await app.inject({
       method: "GET",
@@ -384,12 +418,12 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
   const buyerA = await createActor({ verificationStatus: VerificationStatus.APPROVED });
   const buyerB = await createActor({ verificationStatus: VerificationStatus.APPROVED });
 
-  const draft = await createListing(sellerA.user.id, ListingStatus.DRAFT);
+  await createListing(sellerA.user.id, ListingStatus.DRAFT);
   const published = await createListing(sellerA.user.id, ListingStatus.PUBLISHED);
-  const reserved = await createListing(sellerA.user.id, ListingStatus.RESERVED);
+  await createListing(sellerA.user.id, ListingStatus.RESERVED);
   const sold = await createListing(sellerA.user.id, ListingStatus.SOLD);
-  const suspended = await createListing(sellerA.user.id, ListingStatus.SUSPENDED);
-  const removed = await createListing(sellerA.user.id, ListingStatus.REMOVED);
+  await createListing(sellerA.user.id, ListingStatus.SUSPENDED);
+  await createListing(sellerA.user.id, ListingStatus.REMOVED);
 
   await prisma.listingInquiry.create({
     data: {
