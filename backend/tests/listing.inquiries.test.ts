@@ -15,6 +15,7 @@ process.env.CORS_ORIGIN ??= "http://localhost:5173";
 process.env.STUDENT_DATA_ENCRYPTION_KEY ??= Buffer.alloc(32).toString("base64");
 
 const { prisma } = await import("../src/lib/prisma.js");
+const { createListingObjectKey } = await import("../src/lib/storage.js");
 const { env } = await import("../src/config/env.js");
 const { buildApp } = await import("../src/app/app.js");
 const { createSession } = await import("../src/modules/auth/auth.service.js");
@@ -108,6 +109,9 @@ after(async () => {
       ],
     },
   });
+  if (listingIds.length > 0) {
+    await prisma.listingImage.deleteMany({ where: { listingId: { in: listingIds } } });
+  }
   if (listingIds.length > 0) {
     await prisma.listing.deleteMany({ where: { id: { in: listingIds } } });
   }
@@ -602,4 +606,73 @@ test("seller inquiry status transitions and lifecycle interactions are enforced"
       assert.ok(sellerResponse.json().inquiries.some((inquiry: { id: string }) => inquiry.id === lifecycleInquiry.id));
     }
   });
+});
+
+test("withdrawing a published listing preserves history and blocks public access", async () => {
+  const seller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const buyer = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const listing = await createListing(seller.user.id, ListingStatus.PUBLISHED);
+  const objectKey = createListingObjectKey(listing.id, "image/png");
+  await prisma.listingImage.create({
+    data: {
+      listingId: listing.id,
+      objectKey,
+      sortOrder: 0,
+      processingStatus: "READY",
+    },
+  });
+
+  const inquiryUrl = `/api/v1/listings/${listing.id}/inquiries`;
+  const createdInquiry = await app.inject({
+    method: "POST",
+    url: inquiryUrl,
+    headers: authHeaders(buyer.sessionToken),
+    payload: { message: "Please let me know if this is available." },
+  });
+  assert.equal(createdInquiry.statusCode, 201);
+
+  const removal = await app.inject({
+    method: "DELETE",
+    url: `/api/v1/listings/${listing.id}`,
+    headers: authHeaders(seller.sessionToken),
+  });
+  assert.equal(removal.statusCode, 200);
+  assert.equal(removal.json().listing.status, ListingStatus.REMOVED);
+
+  assert.equal(
+    await prisma.listingImage.count({ where: { listingId: listing.id } }),
+    1,
+  );
+  assert.equal(
+    await prisma.listingInquiry.count({ where: { listingId: listing.id } }),
+    1,
+  );
+
+  const feed = await app.inject({
+    method: "GET",
+    url: "/api/v1/listings?page=1&pageSize=20",
+  });
+  assert.equal(feed.statusCode, 200);
+  assert.equal(
+    feed.json().items.some((item: { id: string }) => item.id === listing.id),
+    false,
+  );
+
+  const detail = await app.inject({
+    method: "GET",
+    url: `/api/v1/listings/${listing.id}`,
+  });
+  assert.equal(detail.statusCode, 404);
+
+  const newInquiry = await app.inject({
+    method: "POST",
+    url: inquiryUrl,
+    headers: authHeaders(buyer.sessionToken),
+    payload: { message: "A new inquiry after withdrawal." },
+  });
+  assert.equal(newInquiry.statusCode, 404);
+  assert.equal(
+    await prisma.listingInquiry.count({ where: { listingId: listing.id } }),
+    1,
+  );
 });
