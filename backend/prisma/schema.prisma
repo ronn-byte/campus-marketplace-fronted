@@ -157,6 +157,7 @@ model Listing {
   condition   ListingCondition
   location    String           @db.VarChar(120)
   status      ListingStatus    @default(DRAFT)
+  creationKey String?          @db.Uuid
   createdAt   DateTime         @default(now()) @db.Timestamptz(3)
   updatedAt   DateTime         @updatedAt @db.Timestamptz(3)
   publishedAt DateTime?        @db.Timestamptz(3)
@@ -169,6 +170,7 @@ model Listing {
   @@index([sellerId, status, createdAt])
   @@index([categoryId, status, createdAt])
   @@index([status, createdAt])
+  @@unique([sellerId, creationKey])
   @@map("listings")
 }
 
@@ -181,12 +183,14 @@ model ListingImage {
   uploadBatchId    String?               @db.Uuid
   uploadBatchIndex Int?
   contentSha256    String?               @db.Char(64)
+  removedAt        DateTime?             @db.Timestamptz(3)
   createdAt        DateTime              @default(now()) @db.Timestamptz(3)
   listing          Listing               @relation(fields: [listingId], references: [id])
 
   @@unique([listingId, sortOrder])
   @@unique([listingId, uploadBatchId, uploadBatchIndex])
   @@index([listingId, processingStatus])
+  @@index([listingId, removedAt, processingStatus])
   @@map("listing_images")
 }
 

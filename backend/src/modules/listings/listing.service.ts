@@ -186,6 +186,7 @@ export async function getListingCategories() {
 export async function createListing(
   sellerId: string,
   input: CreateListingInput,
+  creationKey?: string,
 ) {
   await assertSellerAuthorized(sellerId);
 
@@ -206,22 +207,74 @@ export async function createListing(
     );
   }
 
-  const listing = await prisma.listing.create({
-    data: {
-      sellerId,
-      categoryId: input.categoryId,
-      title: input.title,
-      description: input.description,
-      price: input.price,
-      condition: input.condition,
-      location: input.location,
-      status: ListingStatus.DRAFT,
-    },
-    include: {
-      category: true,
-      images: true,
-    },
-  });
+  const select = {
+    id: true,
+    sellerId: true,
+    categoryId: true,
+    title: true,
+    description: true,
+    price: true,
+    condition: true,
+    location: true,
+    status: true,
+    createdAt: true,
+    updatedAt: true,
+    publishedAt: true,
+    soldAt: true,
+    category: true,
+    images: true,
+  } satisfies Prisma.ListingSelect;
+
+  let listing;
+  try {
+    listing = await prisma.listing.create({
+      data: {
+        sellerId,
+        categoryId: input.categoryId,
+        title: input.title,
+        description: input.description,
+        price: input.price,
+        condition: input.condition,
+        location: input.location,
+        status: ListingStatus.DRAFT,
+        ...(creationKey ? { creationKey } : {}),
+      },
+      select,
+    });
+  } catch (error) {
+    if (
+      !creationKey ||
+      !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+      error.code !== "P2002"
+    ) {
+      throw error;
+    }
+
+    const previous = await prisma.listing.findUnique({
+      where: { sellerId_creationKey: { sellerId, creationKey } },
+      select,
+    });
+    if (!previous) throw error;
+    if (previous.status !== ListingStatus.DRAFT) {
+      throw new AppError(409, "INVALID_LISTING_STATUS", "This saved draft is no longer editable.");
+    }
+
+    const samePayload =
+      previous.categoryId === input.categoryId &&
+      previous.title === input.title &&
+      previous.description === input.description &&
+      Number(previous.price) === input.price &&
+      previous.condition === input.condition &&
+      previous.location === input.location;
+    if (!samePayload) {
+      throw new AppError(
+        409,
+        "LISTING_CREATION_RETRY_MISMATCH",
+        "A draft from an earlier save already exists. Open it from My Listings before making further changes.",
+      );
+    }
+    listing = previous;
+  }
 
   return {
     ...listing,
@@ -235,7 +288,7 @@ export async function addListingImages(
   files: ListingImageUpload[],
   uploadBatchId?: string,
 ) {
-  await assertDraftListingImageUpload(listingId, sellerId);
+  await assertListingImageManagement(listingId, sellerId);
 
   if (files.length === 0) {
     throw new AppError(
@@ -327,11 +380,11 @@ export async function addListingImages(
       if (!current || current.sellerId !== sellerId) {
         throw new AppError(404, "LISTING_NOT_FOUND", "Draft not found.");
       }
-      if (current.status !== ListingStatus.DRAFT) {
+      if (current.status !== ListingStatus.DRAFT && current.status !== ListingStatus.PUBLISHED) {
         throw new AppError(
           409,
           "INVALID_LISTING_STATUS",
-          "Only draft listings can receive images.",
+          "Images can only be changed on draft or published listings.",
         );
       }
 
@@ -368,7 +421,7 @@ export async function addListingImages(
       }
 
       const existingCount = await transaction.listingImage.count({
-        where: { listingId: listing.id },
+        where: { listingId: listing.id, removedAt: null },
       });
       if (existingCount + files.length > MAX_LISTING_IMAGES_PER_LISTING) {
         throw new AppError(
@@ -377,11 +430,15 @@ export async function addListingImages(
           `A listing may contain up to ${MAX_LISTING_IMAGES_PER_LISTING} images.`,
         );
       }
-      nextSortOrder = existingCount;
+      const maxSortOrder = await transaction.listingImage.aggregate({
+        where: { listingId: listing.id },
+        _max: { sortOrder: true },
+      });
+      nextSortOrder = (maxSortOrder._max.sortOrder ?? -1) + 1;
       await transaction.listingImage.createMany({
         data: records.map((record) => ({
           ...record,
-          sortOrder: existingCount + record.sortOrder,
+          sortOrder: nextSortOrder + record.sortOrder,
         })),
       });
     });
@@ -407,15 +464,15 @@ export async function addListingImages(
   // committed rows and their files; the client can reload the draft.
   const images = await prisma.listingImage.findMany({
     where: uploadBatchId
-      ? { listingId: listing.id, uploadBatchId }
-      : { listingId: listing.id, sortOrder: { gte: nextSortOrder } },
+      ? { listingId: listing.id, uploadBatchId, removedAt: null }
+      : { listingId: listing.id, sortOrder: { gte: nextSortOrder }, removedAt: null },
     orderBy: { sortOrder: "asc" },
     select: { id: true, objectKey: true, sortOrder: true, processingStatus: true },
   });
   return withImageUrls(images);
 }
 
-export async function assertDraftListingImageUpload(
+export async function assertListingImageManagement(
   listingId: string,
   sellerId: string,
 ) {
@@ -434,13 +491,61 @@ export async function assertDraftListingImageUpload(
       "You do not have permission to upload images for this listing.",
     );
   }
-  if (listing.status !== ListingStatus.DRAFT) {
+  if (listing.status !== ListingStatus.DRAFT && listing.status !== ListingStatus.PUBLISHED) {
     throw new AppError(
       409,
       "INVALID_LISTING_STATUS",
-      "Only draft listings can receive images.",
+      "Images can only be changed on draft or published listings.",
     );
   }
+}
+
+export async function removeListingImage(
+  listingId: string,
+  imageId: string,
+  sellerId: string,
+) {
+  await assertSellerAuthorized(sellerId);
+
+  return prisma.$transaction(async (transaction) => {
+    // Serialize removals with uploads so active image counts and positions
+    // stay consistent while removed rows remain available for recovery.
+    await transaction.$queryRaw<Array<{ id: string }>>`
+      SELECT id FROM listings WHERE id = ${listingId}::uuid FOR UPDATE
+    `;
+
+    const listing = await transaction.listing.findUnique({
+      where: { id: listingId },
+      select: { id: true, sellerId: true, status: true },
+    });
+    if (!listing) {
+      throw new AppError(404, "LISTING_NOT_FOUND", "Listing not found.");
+    }
+    if (listing.sellerId !== sellerId) {
+      throw new AppError(403, "FORBIDDEN", "You do not have permission to change this listing's images.");
+    }
+    if (listing.status !== ListingStatus.DRAFT && listing.status !== ListingStatus.PUBLISHED) {
+      throw new AppError(409, "INVALID_LISTING_STATUS", "Images can only be changed on draft or published listings.");
+    }
+
+    const image = await transaction.listingImage.findFirst({
+      where: { id: imageId, listingId, removedAt: null },
+      select: { id: true },
+    });
+    if (!image) {
+      throw new AppError(404, "LISTING_IMAGE_NOT_FOUND", "Image not found.");
+    }
+
+    const removedAt = new Date();
+    const result = await transaction.listingImage.updateMany({
+      where: { id: image.id, listingId, removedAt: null },
+      data: { removedAt },
+    });
+    if (result.count !== 1) {
+      throw new AppError(409, "LISTING_IMAGE_CHANGED", "This image has changed. Refresh and try again.");
+    }
+    return { id: image.id, removedAt };
+  });
 }
 
 
@@ -500,6 +605,7 @@ export async function publishListing(input: PublishListingInput) {
       where: {
         listingId: listing.id,
         processingStatus: "READY",
+        removedAt: null,
       },
     });
 
@@ -747,7 +853,7 @@ export async function getPublishedListings(
           },
         },
         images: {
-          where: { processingStatus: "READY" },
+          where: { processingStatus: "READY", removedAt: null },
           orderBy: { sortOrder: "asc" },
           select: {
             id: true,
@@ -815,7 +921,7 @@ export async function getPublicListing(listingId: string, viewerId?: string) {
         },
       },
       images: {
-        where: { processingStatus: "READY" },
+        where: { processingStatus: "READY", removedAt: null },
         orderBy: { sortOrder: "asc" },
         select: {
           id: true,
@@ -892,7 +998,7 @@ export async function getSellerListings(
           select: { id: true, name: true, slug: true },
         },
         images: {
-          where: { processingStatus: "READY" },
+          where: { processingStatus: "READY", removedAt: null },
           orderBy: { sortOrder: "asc" },
           select: {
             id: true,
@@ -1191,12 +1297,24 @@ export async function updateListing(
     );
   }
 
-  if (existing.status !== ListingStatus.DRAFT) {
+  if (existing.status !== ListingStatus.DRAFT && existing.status !== ListingStatus.PUBLISHED) {
     throw new AppError(
       409,
       "INVALID_LISTING_STATUS",
-      "Only draft listings can be updated.",
+      "Only draft or published listings can be edited.",
     );
+  }
+
+  if (existing.status === ListingStatus.PUBLISHED) {
+    const disallowedFields = ["title", "categoryId", "condition", "location"]
+      .filter((field) => input[field as keyof UpdateListingInput] !== undefined);
+    if (disallowedFields.length > 0) {
+      throw new AppError(
+        422,
+        "PUBLISHED_LISTING_FIELDS_RESTRICTED",
+        "Published listings can only update price and description.",
+      );
+    }
   }
 
   if (input.categoryId !== undefined) {
@@ -1222,7 +1340,7 @@ export async function updateListing(
     where: {
       id: existing.id,
       sellerId,
-      status: ListingStatus.DRAFT,
+      status: existing.status,
     },
     data: {
       ...(input.categoryId === undefined
@@ -1244,7 +1362,7 @@ export async function updateListing(
     throw new AppError(
       409,
       "INVALID_LISTING_STATUS",
-      "Only draft listings can be updated.",
+      "The listing status changed before this update could be applied.",
     );
   }
 
@@ -1268,7 +1386,7 @@ export async function updateListing(
         },
       },
       images: {
-        where: { processingStatus: "READY" },
+      where: { processingStatus: "READY", removedAt: null },
         orderBy: { sortOrder: "asc" },
         select: {
           id: true,
@@ -1312,19 +1430,14 @@ export async function removeListing(
     );
   }
 
-  if (existing.status === ListingStatus.REMOVED) {
+  if (
+    existing.status !== ListingStatus.DRAFT &&
+    existing.status !== ListingStatus.PUBLISHED
+  ) {
     throw new AppError(
       409,
       "INVALID_LISTING_STATUS",
-      "This listing has already been removed.",
-    );
-  }
-
-  if (existing.status === ListingStatus.SOLD) {
-    throw new AppError(
-      409,
-      "INVALID_LISTING_STATUS",
-      "A sold listing cannot be removed.",
+      "Only draft or published listings can be removed.",
     );
   }
 
@@ -1332,9 +1445,9 @@ export async function removeListing(
     where: {
       id: existing.id,
       sellerId,
-      status: {
-        notIn: [ListingStatus.SOLD, ListingStatus.REMOVED],
-      },
+      // Match the state we authorized above so a concurrent transition to a
+      // non-removable state cannot be overwritten by this request.
+      status: existing.status,
     },
     data: { status: ListingStatus.REMOVED },
   });
@@ -1364,7 +1477,7 @@ export async function removeListing(
  *
  * Authentication is enforced by the route. This function independently
  * verifies seller eligibility and restricts the database query to the
- * supplied seller ID and DRAFT status.
+ * supplied seller ID and an editable listing status.
  */
 export async function getSellerListingForEdit(
   listingId: string,
@@ -1376,7 +1489,7 @@ export async function getSellerListingForEdit(
     where: {
       id: listingId,
       sellerId,
-      status: ListingStatus.DRAFT,
+      status: { in: [ListingStatus.DRAFT, ListingStatus.PUBLISHED] },
     },
     select: {
       id: true,
@@ -1396,7 +1509,7 @@ export async function getSellerListingForEdit(
         },
       },
       images: {
-        where: { processingStatus: "READY" },
+        where: { processingStatus: "READY", removedAt: null },
         orderBy: { sortOrder: "asc" },
         select: {
           id: true,
@@ -1412,7 +1525,7 @@ export async function getSellerListingForEdit(
     throw new AppError(
       404,
       "LISTING_NOT_FOUND",
-      "The draft could not be found.",
+      "The editable listing could not be found.",
     );
   }
 

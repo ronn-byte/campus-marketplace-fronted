@@ -1,10 +1,12 @@
 import { z } from "zod";
 
+export const MAX_LISTING_PRICE = 9_999_999_999.99;
+
 export const createListingSchema = z.object({
   categoryId: z.string().uuid(),
   title: z.string().trim().min(1).max(120),
   description: z.string().trim().min(1).max(5000),
-  price: z.number().nonnegative(),
+  price: z.number().finite().min(0).max(MAX_LISTING_PRICE),
   condition: z.enum(["NEW", "LIKE_NEW", "GOOD", "FAIR", "USED"]),
   location: z.string().trim().min(1).max(120),
 }).strict();
@@ -63,6 +65,11 @@ export const publishListingParamsSchema = z.object({
 
 export const listingParamsSchema = z.object({
   listingId: z.string().uuid(),
+}).strict();
+
+export const listingImageParamsSchema = z.object({
+  listingId: z.string().uuid(),
+  imageId: z.string().uuid(),
 }).strict();
 
 export const createListingInquirySchema = z.object({

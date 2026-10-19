@@ -8,6 +8,7 @@ import {
   createListingSchema,
   listingInquiryParamsSchema,
   listingParamsSchema,
+  listingImageParamsSchema,
   listListingsQuerySchema,
   listPublicListingsQuerySchema,
   publishListingParamsSchema,
@@ -16,8 +17,9 @@ import {
 } from "./listing.schemas.js";
 
 import {
-  assertDraftListingImageUpload,
+  assertListingImageManagement,
   addListingImages,
+  removeListingImage,
   createListingInquiry,
   createListing,
   getBuyerInquiries,
@@ -207,9 +209,9 @@ export async function registerListingRoutes(app: FastifyInstance) {
         );
       }
 
-      // Reject unverified, non-owner, and non-draft uploads before buffering
+      // Reject ineligible, non-owner, or non-editable uploads before buffering
       // any multipart content in memory.
-      await assertDraftListingImageUpload(params.data.listingId, user.id);
+      await assertListingImageManagement(params.data.listingId, user.id);
 
       const files: Array<{ mimetype: string; buffer: Buffer }> = [];
       let aggregateBytes = 0;
@@ -248,6 +250,29 @@ export async function registerListingRoutes(app: FastifyInstance) {
       );
 
       return reply.status(201).send({ images });
+    },
+  );
+
+  app.delete(
+    "/listings/:listingId/images/:imageId",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingImageParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing or image ID is invalid.");
+      }
+
+      const user = request.user;
+      if (!user) {
+        throw new AppError(401, "UNAUTHENTICATED", "Authentication is required.");
+      }
+
+      const image = await removeListingImage(
+        params.data.listingId,
+        params.data.imageId,
+        user.id,
+      );
+      return reply.status(200).send({ image });
     },
   );
 
@@ -606,7 +631,19 @@ export async function registerListingRoutes(app: FastifyInstance) {
         );
       }
 
-      const listing = await createListing(user.id, result.data);
+      const creationKeyHeader = request.headers["idempotency-key"];
+      const creationKey = creationKeyHeader === undefined
+        ? undefined
+        : z.string().uuid().safeParse(creationKeyHeader);
+      if (creationKeyHeader !== undefined && !creationKey?.success) {
+        throw new AppError(400, "BAD_REQUEST", "The draft retry key must be a UUID.");
+      }
+
+      const listing = await createListing(
+        user.id,
+        result.data,
+        creationKey?.success ? creationKey.data : undefined,
+      );
 
       return reply.status(201).send({ listing });
     },
