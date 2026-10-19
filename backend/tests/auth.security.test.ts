@@ -13,6 +13,7 @@ process.env.RESEND_API_KEY = "test-key";
 process.env.EMAIL_FROM = "noreply@campus-marketplace.test";
 process.env.APP_URL = "http://localhost:3000";
 process.env.CORS_ORIGIN = "http://localhost:5173";
+process.env.STUDENT_DATA_ENCRYPTION_KEY = Buffer.alloc(32, 3).toString("base64");
 
 const sendCalls: Array<{ to: string; subject: string }> = [];
 const originalFetch = globalThis.fetch;
@@ -45,6 +46,7 @@ after(() => {
 });
 
 const { prisma } = await import("../src/lib/prisma.js");
+const { env } = await import("../src/config/env.js");
 const { buildApp } = await import("../src/app/app.js");
 const {
   authenticate,
@@ -72,6 +74,39 @@ async function cleanupTestUser(email: string) {
     prisma.user.deleteMany({ where: { email } }),
   ]);
 }
+
+test("registration rolls back account creation when student encryption is unavailable", async () => {
+  const email = "test-registration-encryption-unavailable@example.com";
+  await cleanupTestUser(email);
+
+  const originalEncryptionKey = env.STUDENT_DATA_ENCRYPTION_KEY;
+  try {
+    env.STUDENT_DATA_ENCRYPTION_KEY = undefined;
+
+    await assert.rejects(
+      () => register({
+        email,
+        password: "test-password-12345",
+        displayName: "Test Student",
+        verificationMethod: VerificationMethod.MANUAL_STUDENT,
+        registrationNumber: "ROLLBACK123456",
+      }),
+      (error: unknown) =>
+        error instanceof AppError &&
+        error.code === "VERIFICATION_STORAGE_UNAVAILABLE" &&
+        error.statusCode === 503,
+    );
+
+    assert.equal(await prisma.user.count({ where: { email } }), 0);
+    assert.equal(
+      await prisma.studentProfile.count({ where: { user: { email } } }),
+      0,
+    );
+  } finally {
+    env.STUDENT_DATA_ENCRYPTION_KEY = originalEncryptionKey;
+    await cleanupTestUser(email);
+  }
+});
 
 test("Registration succeeds and remains pending when account verification email delivery fails", async () => {
   const email = "test-registration-email-delivery-failure@example.com";

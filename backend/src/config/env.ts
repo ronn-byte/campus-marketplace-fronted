@@ -16,6 +16,26 @@ const envSchema = z.object({
   UPLOAD_ROOT: z.string().min(1).default("uploads"),
   UPLOAD_BASE_URL: z.string().url().optional(),
   STUDENT_DATA_ENCRYPTION_KEY: z.string().base64().optional(),
+}).superRefine((value, context) => {
+  if (value.NODE_ENV !== "production") return;
+
+  const key = value.STUDENT_DATA_ENCRYPTION_KEY;
+  if (!key) {
+    context.addIssue({
+      code: "custom",
+      path: ["STUDENT_DATA_ENCRYPTION_KEY"],
+      message: "is required in production",
+    });
+    return;
+  }
+
+  if (Buffer.from(key, "base64").length !== 32) {
+    context.addIssue({
+      code: "custom",
+      path: ["STUDENT_DATA_ENCRYPTION_KEY"],
+      message: "must decode to exactly 32 bytes in production",
+    });
+  }
 });
 
 const parsed = envSchema.safeParse(process.env);
