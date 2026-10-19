@@ -106,8 +106,10 @@ export async function getListingCategories() {
   return data.categories;
 }
 
-export async function createListing(payload) {
-  const { data } = await apiClient.post("/listings", payload);
+export async function createListing(payload, idempotencyKey) {
+  const { data } = await apiClient.post("/listings", payload, {
+    headers: idempotencyKey ? { "Idempotency-Key": idempotencyKey } : {},
+  });
   if (!data?.listing?.id) {
     throw new Error("The listing response did not include an ID.");
   }
@@ -130,6 +132,16 @@ export async function uploadListingImages(id, files, idempotencyKey) {
     throw new Error("The image upload response did not include image URLs.");
   }
   return data.images;
+}
+
+export async function removeListingImage(listingId, imageId) {
+  const { data } = await apiClient.delete(
+    `/listings/${encodeURIComponent(listingId)}/images/${encodeURIComponent(imageId)}`,
+  );
+  if (!data?.image?.id) {
+    throw new Error("The image removal response was invalid.");
+  }
+  return data.image;
 }
 
 export async function createListingInquiry(id, message) {

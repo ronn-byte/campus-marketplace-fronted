@@ -265,6 +265,14 @@ export default function MyListings() {
                           : getListingRemovalAction(listing.status).label}
                       </button>
                     )}
+                    {listing.status === "PUBLISHED" && (
+                      <Link
+                        className="button button--quiet"
+                        to={`/post-item?edit=${encodeURIComponent(listing.id)}`}
+                      >
+                        Edit listing
+                      </Link>
+                    )}
                     {listing.status === "PUBLISHED" && <>
                       <button className="button button--quiet" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, reserveListing, "Listing reserved.")}>{pendingListingId === listing.id ? "Updating…" : "Reserve"}</button>
                       <button className="button button--secondary" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, markListingSold, "Listing marked as sold.")}>{pendingListingId === listing.id ? "Updating…" : "Mark as sold"}</button>
