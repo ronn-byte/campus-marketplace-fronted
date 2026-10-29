@@ -169,3 +169,86 @@ test("profile API requires auth and supports safe profile updates", async () => 
 
   await cleanupUser(email);
 });
+
+test("eligible non-student sellers have public profiles while inactive accounts stay hidden", async () => {
+  const email = "profile-moderator-seller@example.com";
+  await cleanupUser(email);
+
+  const seller = await prisma.user.create({
+    data: {
+      email,
+      passwordHash: await hashPassword("SecurePassword123!"),
+      role: Role.MODERATOR,
+      accountStatus: AccountStatus.ACTIVE,
+      emailVerifiedAt: new Date(),
+      profile: {
+        create: {
+          nickname: "Campus Moderator",
+          phoneNumber: "+254712345678",
+          whatsappNumber: "+254723456789",
+          course: "Marketplace Operations",
+        },
+      },
+    },
+  });
+
+  const anonymousProfile = await app.inject({
+    method: "GET",
+    url: `/api/v1/sellers/${seller.id}`,
+  });
+  assert.equal(anonymousProfile.statusCode, 200);
+  assert.deepEqual(anonymousProfile.json().profile, {
+    name: "Campus Moderator",
+    avatarUrl: null,
+    description: null,
+    phoneNumber: null,
+    whatsappNumber: null,
+  });
+
+  const invalidSessionProfile = await app.inject({
+    method: "GET",
+    url: `/api/v1/sellers/${seller.id}`,
+    headers: { cookie: `${env.SESSION_COOKIE_NAME}=invalid-session-token` },
+  });
+  assert.equal(invalidSessionProfile.statusCode, 200);
+  assert.deepEqual(invalidSessionProfile.json().profile, anonymousProfile.json().profile);
+
+  const rawToken = createOpaqueToken();
+  await createSession(seller.id, hashToken(rawToken), {});
+  const authenticatedProfile = await app.inject({
+    method: "GET",
+    url: `/api/v1/sellers/${seller.id}`,
+    headers: { cookie: `${env.SESSION_COOKIE_NAME}=${rawToken}` },
+  });
+  assert.equal(authenticatedProfile.statusCode, 200);
+  assert.deepEqual(authenticatedProfile.json().profile, {
+    name: "Campus Moderator",
+    avatarUrl: null,
+    description: null,
+    phoneNumber: "+254712345678",
+    whatsappNumber: "+254723456789",
+  });
+  assert.equal(JSON.stringify(authenticatedProfile.json()).includes(email), false);
+
+  await prisma.user.update({
+    where: { id: seller.id },
+    data: { accountStatus: AccountStatus.SUSPENDED },
+  });
+  const suspendedProfile = await app.inject({
+    method: "GET",
+    url: `/api/v1/sellers/${seller.id}`,
+  });
+  assert.equal(suspendedProfile.statusCode, 404);
+
+  await prisma.user.update({
+    where: { id: seller.id },
+    data: { accountStatus: AccountStatus.DISABLED },
+  });
+  const disabledProfile = await app.inject({
+    method: "GET",
+    url: `/api/v1/sellers/${seller.id}`,
+  });
+  assert.equal(disabledProfile.statusCode, 404);
+
+  await cleanupUser(email);
+});

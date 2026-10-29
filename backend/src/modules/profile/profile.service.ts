@@ -1,5 +1,5 @@
 import { prisma } from "../../lib/prisma.js";
-import { AccountStatus, Role } from "@prisma/client";
+import { AccountStatus } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 
 export type ProfilePayload = {
@@ -70,7 +70,6 @@ export async function getPublicSellerProfile(userId: string, includeContactDetai
   const user = await prisma.user.findFirst({
     where: {
       id: userId,
-      role: Role.STUDENT,
       accountStatus: AccountStatus.ACTIVE,
       emailVerifiedAt: { not: null },
     },
