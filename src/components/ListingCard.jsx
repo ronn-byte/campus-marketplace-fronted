@@ -52,7 +52,7 @@ export default function ListingCard({ listing }) {
           <div className="listing-card__seller-price">
             <strong>KSh {Number(listing.price ?? 0).toLocaleString("en-KE", { maximumFractionDigits: 2 })}</strong>
             <span className="seller-line">
-              {seller.id ? <Link to={`/sellers/${seller.id}`} state={{ from: "/" }} onClick={(event) => event.stopPropagation()}>{seller.name || "MUT Market seller"}</Link> : (seller.name || "MUT Market seller")}
+              {seller.id ? <Link to={`/sellers/${seller.id}`} state={{ from: "/", listingId: listing.id }} onClick={(event) => event.stopPropagation()}>{seller.name || "MUT Market seller"}</Link> : (seller.name || "MUT Market seller")}
               {seller.verified === true && <span className="listing-card__verified"><span aria-hidden="true">✓</span> Verified</span>}
             </span>
           </div>

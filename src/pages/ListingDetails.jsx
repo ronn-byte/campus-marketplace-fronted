@@ -100,7 +100,7 @@ export default function ListingDetails() {
           <strong className="listing-detail__price">KSh {listing.price.toLocaleString()}</strong>
           <p className="muted">{listing.description}</p>
           <p className="listing-detail__location">Meet around {listing.location}</p>
-          <div className="listing-detail__seller"><span className="avatar">MS</span><span><Link to={`/sellers/${listing.seller.id}`} state={{ from: `/listing/${id}` }}><strong>{listing.seller.name}</strong></Link><small>{listing.seller.verified ? "Verified student" : "Seller"}</small></span></div>
+          <div className="listing-detail__seller"><span className="avatar">MS</span><span><Link to={`/sellers/${listing.seller.id}`} state={{ from: `/listing/${id}`, listingId: listing.id }}><strong>{listing.seller.name}</strong></Link><small>{listing.seller.verified ? "Verified student" : "Seller"}</small></span></div>
           {isAuthLoading ? (
             <p className="muted" role="status">Checking your sign-in status…</p>
           ) : listing.isOwner ? (
