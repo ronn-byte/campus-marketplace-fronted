@@ -10,6 +10,21 @@ export const isValidListingId = (value) => (
   typeof value === "string" && LISTING_ID_PATTERN.test(value)
 );
 
+export const getListingIdFromNavigationState = (state) => {
+  if (isValidListingId(state?.listingId)) return state.listingId;
+  if (typeof state?.from !== "string") return null;
+
+  const match = state.from.match(/^\/listing\/([^/?#]+)\/?$/);
+  if (!match) return null;
+
+  try {
+    const listingId = decodeURIComponent(match[1]);
+    return isValidListingId(listingId) ? listingId : null;
+  } catch {
+    return null;
+  }
+};
+
 export const buildWhatsAppUrl = ({ phoneNumber, listing, origin }) => {
   const phone = normalizeWhatsAppNumber(phoneNumber);
   if (!isValidWhatsAppNumber(phone)) return null;

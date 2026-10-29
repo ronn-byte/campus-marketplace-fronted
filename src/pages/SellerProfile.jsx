@@ -4,6 +4,7 @@ import apiClient, { getApiErrorMessage } from "../services/apiClient";
 import { getListingById } from "../services/listingService";
 import {
   buildWhatsAppUrl,
+  getListingIdFromNavigationState,
   isValidListingId,
   isValidWhatsAppNumber,
   normalizeWhatsAppNumber,
@@ -13,7 +14,7 @@ export default function SellerProfile() {
   const { sellerId } = useParams();
   const location = useLocation();
   const backPath = location.state?.from || "/";
-  const listingId = location.state?.listingId;
+  const listingId = getListingIdFromNavigationState(location.state);
   const [state, setState] = useState({ status: "loading" });
 
   useEffect(() => {

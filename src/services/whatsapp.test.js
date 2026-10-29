@@ -3,11 +3,47 @@ import test from "node:test";
 
 import {
   buildWhatsAppUrl,
+  getListingIdFromNavigationState,
   isValidListingId,
   isValidWhatsAppNumber,
 } from "./whatsapp.js";
 
 const listingId = "8f3fbaa4-ee54-411f-a748-d0aba806554a";
+
+test("recovers listing context from the seller navigation back path", () => {
+  assert.equal(
+    getListingIdFromNavigationState({ from: `/listing/${listingId}` }),
+    listingId,
+  );
+  assert.equal(getListingIdFromNavigationState({ from: "/listing/not-a-uuid" }), null);
+  assert.equal(getListingIdFromNavigationState({ from: "/" }), null);
+});
+
+test("prefers a valid listing ID over a conflicting navigation back path", () => {
+  const otherListingId = "11111111-1111-4111-8111-111111111111";
+
+  assert.equal(
+    getListingIdFromNavigationState({
+      listingId,
+      from: `/listing/${otherListingId}`,
+    }),
+    listingId,
+  );
+  assert.equal(
+    getListingIdFromNavigationState({
+      listingId: "not-a-uuid",
+      from: `/listing/${otherListingId}`,
+    }),
+    otherListingId,
+  );
+});
+
+test("ignores malformed percent-encoded listing paths", () => {
+  assert.equal(
+    getListingIdFromNavigationState({ from: "/listing/%E0%A4%A" }),
+    null,
+  );
+});
 
 test("builds an encoded listing inquiry with the canonical public URL", () => {
   const url = new URL(buildWhatsAppUrl({
