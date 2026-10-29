@@ -1,6 +1,11 @@
 const safeCodeMessages = {
   INVALID_CREDENTIALS: "That email or password wasn't recognized. Check your details or reset your password.",
   UNAUTHENTICATED: "Your session has expired. Please sign in again.",
+  SELLER_EMAIL_UNVERIFIED: "Confirm your email before creating or managing listings. You can resend the confirmation from Settings.",
+  SELLER_NOT_ELIGIBLE: "Your account is not currently eligible to sell. Check your account status in Settings.",
+  EMAIL_VERIFICATION_REQUIRED: "Confirm your email before using protected buyer actions. You can resend the confirmation from Settings.",
+  BUYER_NOT_ELIGIBLE: "Your account is not currently eligible for protected buyer actions.",
+  SELLER_PROFILE_INCOMPLETE: "Complete your seller profile with a nickname and course before publishing.",
   AUTH_RATE_LIMITED: "Too many attempts were made. Wait a little while, then try again.",
   VALIDATION_ERROR: "Please check the form fields and try again.",
   EMAIL_ALREADY_EXISTS: "An account already uses this email. Log in or reset the password instead.",

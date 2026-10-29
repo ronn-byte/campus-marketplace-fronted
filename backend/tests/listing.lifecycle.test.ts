@@ -16,6 +16,7 @@ process.env.CORS_ORIGIN ??= "http://localhost:5173";
 process.env.STUDENT_DATA_ENCRYPTION_KEY ??= Buffer.alloc(32).toString("base64");
 
 const { prisma } = await import("../src/lib/prisma.js");
+const { createListingObjectKey } = await import("../src/lib/storage.js");
 const { env } = await import("../src/config/env.js");
 const { buildApp } = await import("../src/app/app.js");
 const { createSession } = await import("../src/modules/auth/auth.service.js");
@@ -26,6 +27,8 @@ type ActorOptions = {
   role?: Role;
   accountStatus?: AccountStatus;
   verificationStatus?: VerificationStatus;
+  emailVerified?: boolean;
+  profileComplete?: boolean;
 };
 
 const actorIds: string[] = [];
@@ -41,6 +44,10 @@ async function createActor(options: ActorOptions = {}) {
       passwordHash: await hashPassword("phase2-lifecycle-test-password"),
       role: options.role ?? Role.STUDENT,
       accountStatus: options.accountStatus ?? AccountStatus.ACTIVE,
+      emailVerifiedAt: options.emailVerified === false ? null : new Date(),
+      ...(options.profileComplete === false
+        ? {}
+        : { profile: { create: { nickname: "Lifecycle Seller", course: "Computer Science" } } }),
       studentProfile: {
         create: {
           displayName: "Lifecycle Test Student",
@@ -110,6 +117,7 @@ before(async () => {
 
 after(async () => {
   if (listingIds.length > 0) {
+    await prisma.listingImage.deleteMany({ where: { listingId: { in: listingIds } } });
     await prisma.listing.deleteMany({ where: { id: { in: listingIds } } });
   }
   if (actorIds.length > 0) {
@@ -161,12 +169,120 @@ test("listing lifecycle actions require an authorized owner", async () => {
   assert.equal(response.json().listing.status, ListingStatus.RESERVED);
 
   const administrator = await createActor({ role: Role.ADMINISTRATOR });
-  const disallowedRoleResponse = await postAction(
+  const administratorNonOwnerResponse = await postAction(
     "sold",
     listing.id,
     administrator.sessionToken,
   );
-  assert.equal(disallowedRoleResponse.statusCode, 403);
+  assert.equal(administratorNonOwnerResponse.statusCode, 403);
+  assert.equal(administratorNonOwnerResponse.json().error.code, "FORBIDDEN");
+});
+
+test("email-confirmed pending and rejected students can sell, but unconfirmed email cannot create or publish", async () => {
+  for (const verificationStatus of [VerificationStatus.PENDING, VerificationStatus.REJECTED]) {
+    const seller = await createActor({ verificationStatus });
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/listings",
+      headers: authHeaders(seller.sessionToken),
+      payload: {
+        categoryId,
+        title: "Temporary policy listing",
+        description: "Selling is allowed with confirmed email.",
+        price: 100,
+        condition: "GOOD",
+        location: "Campus",
+      },
+    });
+    assert.equal(response.statusCode, 201);
+    const listingId = response.json().listing.id as string;
+    listingIds.push(listingId);
+    await prisma.listingImage.create({
+      data: { listingId, objectKey: createListingObjectKey(listingId, "image/png"), processingStatus: "READY" },
+    });
+    const published = await app.inject({
+      method: "POST",
+      url: `/api/v1/listings/${listingId}/publish`,
+      headers: authHeaders(seller.sessionToken),
+    });
+    assert.equal(published.statusCode, 200);
+    const publicDetail = await app.inject({ method: "GET", url: `/api/v1/listings/${listingId}` });
+    assert.equal(publicDetail.statusCode, 200);
+  }
+
+  const unconfirmed = await createActor({ emailVerified: false });
+  const create = await app.inject({
+    method: "POST",
+    url: "/api/v1/listings",
+    headers: authHeaders(unconfirmed.sessionToken),
+    payload: {
+      categoryId,
+      title: "Email confirmation required",
+      description: "This should not be created.",
+      price: 100,
+      condition: "GOOD",
+      location: "Campus",
+    },
+  });
+  assert.equal(create.statusCode, 403);
+  assert.equal(create.json().error.code, "SELLER_EMAIL_UNVERIFIED");
+
+  const oldDraft = await createListing(unconfirmed.user.id, ListingStatus.DRAFT);
+  await prisma.listingImage.create({
+    data: { listingId: oldDraft.id, objectKey: "test/ready-image", processingStatus: "READY" },
+  });
+  const publish = await app.inject({
+    method: "POST",
+    url: `/api/v1/listings/${oldDraft.id}/publish`,
+    headers: authHeaders(unconfirmed.sessionToken),
+  });
+  assert.equal(publish.statusCode, 403);
+  assert.equal(publish.json().error.code, "SELLER_EMAIL_UNVERIFIED");
+});
+
+test("publishing requires a completed seller profile and does not require student approval", async () => {
+  const seller = await createActor({
+    verificationStatus: VerificationStatus.PENDING,
+    profileComplete: false,
+  });
+  const create = await app.inject({
+    method: "POST",
+    url: "/api/v1/listings",
+    headers: authHeaders(seller.sessionToken),
+    payload: {
+      categoryId,
+      title: "Profile completion listing",
+      description: "Profile completion is enforced at publish time.",
+      price: 100,
+      condition: "GOOD",
+      location: "Campus",
+    },
+  });
+  assert.equal(create.statusCode, 201);
+  const listingId = create.json().listing.id as string;
+  listingIds.push(listingId);
+  await prisma.listingImage.create({
+    data: { listingId, objectKey: `test/${listingId}/ready`, processingStatus: "READY" },
+  });
+
+  const incompletePublish = await app.inject({
+    method: "POST",
+    url: `/api/v1/listings/${listingId}/publish`,
+    headers: authHeaders(seller.sessionToken),
+  });
+  assert.equal(incompletePublish.statusCode, 422);
+  assert.equal(incompletePublish.json().error.code, "SELLER_PROFILE_INCOMPLETE");
+
+  await prisma.profile.create({
+    data: { userId: seller.user.id, nickname: "Lifecycle Seller", course: "Computer Science" },
+  });
+  const published = await app.inject({
+    method: "POST",
+    url: `/api/v1/listings/${listingId}/publish`,
+    headers: authHeaders(seller.sessionToken),
+  });
+  assert.equal(published.statusCode, 200);
+  assert.equal(published.json().listing.status, ListingStatus.PUBLISHED);
 });
 
 test("PUBLISHED listings can be reserved only once", async (t) => {

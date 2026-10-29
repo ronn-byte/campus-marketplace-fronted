@@ -163,7 +163,7 @@ test("Registration succeeds and remains pending when account verification email 
     assert.equal(login.user.email, email);
     await assert.rejects(
       () => assertSellerAuthorized(user.id),
-      (error: unknown) => error instanceof AppError && error.code === "SELLER_VERIFICATION_REQUIRED",
+      (error: unknown) => error instanceof AppError && error.code === "SELLER_EMAIL_UNVERIFIED",
     );
   } finally {
     resend.emails.send = originalSend;

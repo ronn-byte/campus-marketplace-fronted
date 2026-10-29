@@ -1,5 +1,4 @@
-import { randomUUID } from "node:crypto";
-import { randomInt } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import assert from "node:assert/strict";
@@ -11,6 +10,7 @@ import {
   VerificationMethod,
   VerificationStatus,
 } from "@prisma/client";
+import { MAX_LISTING_PRICE } from "../src/modules/listings/listing.schemas.js";
 
 import "../scripts/test-database.js";
 
@@ -22,8 +22,7 @@ process.env.STUDENT_DATA_ENCRYPTION_KEY ??= Buffer.alloc(32).toString("base64");
 
 const { createListingObjectKey } = await import("../src/lib/storage.js");
 const { deleteListingImageFiles } = await import("../src/lib/storage.js");
-const { addListingImages } = await import("../src/modules/listings/listing.service.js");
-const { removeListingImage } = await import("../src/modules/listings/listing.service.js");
+const { addListingImages, removeListingImage } = await import("../src/modules/listings/listing.service.js");
 const sharp = (await import("sharp")).default;
 const { prisma } = await import("../src/lib/prisma.js");
 const { resend } = await import("../src/lib/email.js");
@@ -41,6 +40,8 @@ type ActorOptions = {
   hasProfile?: boolean;
   verificationStatus?: VerificationStatus;
   accountStatus?: AccountStatus;
+  emailVerified?: boolean;
+  profileComplete?: boolean;
 };
 
 const actorIds: string[] = [];
@@ -56,6 +57,10 @@ async function createActor(options: ActorOptions = {}) {
       passwordHash: await hashPassword(password),
       role: options.role ?? Role.STUDENT,
       accountStatus: options.accountStatus ?? AccountStatus.ACTIVE,
+      emailVerifiedAt: options.emailVerified === false ? null : new Date(),
+      ...(options.profileComplete === false
+        ? {}
+        : { profile: { create: { nickname: "Phase 2 Seller", course: "Computer Science" } } }),
     },
   });
   actorIds.push(user.id);
@@ -149,7 +154,6 @@ after(async () => {
   if (actorIds.length > 0) {
     const ids = actorIds;
 
-
     await prisma.listingInquiry.deleteMany({
       where: {
         OR: [
@@ -158,7 +162,6 @@ after(async () => {
         ],
       },
     });
-
 
     await prisma.listingImage.deleteMany({
       where: {
@@ -180,9 +183,9 @@ after(async () => {
   await app.close();
 });
 
-test("seller authorization is enforced by listing services for each verification state", async (t) => {
-  await t.test("unverified users can log in and use normal authenticated routes, but cannot sell", async () => {
-    const actor = await createActor({ hasProfile: false });
+test("email verification and account eligibility govern seller authorization", async (t) => {
+  await t.test("unverified users can log in and browse, but cannot sell", async () => {
+    const actor = await createActor({ hasProfile: false, emailVerified: false });
     const login = await authenticate({
       email: actor.email,
       identifier: undefined,
@@ -197,6 +200,9 @@ test("seller authorization is enforced by listing services for each verification
     });
     assert.equal(me.statusCode, 200);
 
+    const browse = await app.inject({ method: "GET", url: "/api/v1/listings" });
+    assert.equal(browse.statusCode, 200);
+
     const create = await app.inject({
       method: "POST",
       url: "/api/v1/listings",
@@ -204,7 +210,7 @@ test("seller authorization is enforced by listing services for each verification
       payload: createListingPayload(),
     });
     assert.equal(create.statusCode, 403);
-    assert.equal(create.json().error.code, "SELLER_VERIFICATION_REQUIRED");
+    assert.equal(create.json().error.code, "SELLER_EMAIL_UNVERIFIED");
 
     const draft = await createDraftListing(actor.user.id);
     const publish = await app.inject({
@@ -213,11 +219,11 @@ test("seller authorization is enforced by listing services for each verification
       headers: authHeaders(actor.sessionToken),
     });
     assert.equal(publish.statusCode, 403);
-    assert.equal(publish.json().error.code, "SELLER_VERIFICATION_REQUIRED");
+    assert.equal(publish.json().error.code, "SELLER_EMAIL_UNVERIFIED");
   });
 
   for (const status of [VerificationStatus.PENDING, VerificationStatus.REJECTED]) {
-    await t.test(`${status} users cannot create or publish listings`, async () => {
+    await t.test(`${status} users can create and publish listings after email and profile completion`, async () => {
       const actor = await createActor({ verificationStatus: status });
       const create = await app.inject({
         method: "POST",
@@ -225,21 +231,20 @@ test("seller authorization is enforced by listing services for each verification
         headers: authHeaders(actor.sessionToken),
         payload: createListingPayload(),
       });
-      assert.equal(create.statusCode, 403);
-      assert.equal(create.json().error.code, "SELLER_VERIFICATION_REQUIRED");
-
-      const draft = await createDraftListing(actor.user.id);
+      assert.equal(create.statusCode, 201);
+      const listingId = create.json().listing.id as string;
+      await createReadyListingImage(listingId);
       const publish = await app.inject({
         method: "POST",
-        url: `/api/v1/listings/${draft.id}/publish`,
+        url: `/api/v1/listings/${listingId}/publish`,
         headers: authHeaders(actor.sessionToken),
       });
-      assert.equal(publish.statusCode, 403);
-      assert.equal(publish.json().error.code, "SELLER_VERIFICATION_REQUIRED");
+      assert.equal(publish.statusCode, 200);
+      assert.equal(publish.json().listing.status, ListingStatus.PUBLISHED);
     });
   }
 
-  await t.test("APPROVED users can create and publish listings", async () => {
+  await t.test("APPROVED student status is reported but does not gate email-verified selling", async () => {
     const actor = await createActor({ verificationStatus: VerificationStatus.APPROVED });
     const create = await app.inject({
       method: "POST",
@@ -300,6 +305,7 @@ test("seller authorization is enforced by listing services for each verification
       url: "/api/v1/verification/me",
       headers: authHeaders(actor.sessionToken),
     });
+    assert.equal(status.statusCode, 200, JSON.stringify(status.json()));
     assert.deepEqual(Object.keys(status.json()).sort(), ["maySell", "method", "status", "verified"]);
     assert.equal(status.json().maySell, true);
     assert.equal(status.json().status, "APPROVED");
@@ -345,7 +351,7 @@ test("verification status distinguishes an account with no student verification 
   assert.equal(response.statusCode, 200);
   assert.equal(response.json().status, null);
   assert.equal(response.json().verified, false);
-  assert.equal(response.json().maySell, false);
+  assert.equal(response.json().maySell, true);
 });
 
 test("public listing route returns published listings without authentication", async () => {
@@ -419,8 +425,8 @@ test("public listing detail only returns published listings and safe seller fiel
   assert.equal(published?.statusCode, 200);
   const body = published?.json();
   assert.equal(body.listing.status, ListingStatus.PUBLISHED);
-  assert.deepEqual(Object.keys(body.listing.seller).sort(), ["name", "verified"]);
-  assert.equal(body.listing.seller.name, "Phase 2 Test Student");
+  assert.deepEqual(Object.keys(body.listing.seller).sort(), ["avatarUrl", "id", "name", "verified"]);
+  assert.equal(body.listing.seller.name, "Phase 2 Seller");
   assert.equal(body.listing.seller.verified, true);
 
   for (const [status, response] of responses) {
@@ -443,155 +449,82 @@ test("public listing detail only returns published listings and safe seller fiel
   assert.deepEqual(nonexistent.json(), responses.get(ListingStatus.DRAFT)?.json());
 });
 
-test("public listings require an active approved student seller and active category", async () => {
-  const eligible = await createActor({ verificationStatus: VerificationStatus.APPROVED });
-  const pending = await createActor({ verificationStatus: VerificationStatus.PENDING });
-  const suspended = await createActor({
-    verificationStatus: VerificationStatus.APPROVED,
-    accountStatus: AccountStatus.SUSPENDED,
-  });
-  const disabled = await createActor({
-    verificationStatus: VerificationStatus.APPROVED,
-    accountStatus: AccountStatus.DISABLED,
-  });
-  const approvedNonStudent = await createActor({
-    role: Role.ADMINISTRATOR,
-    verificationStatus: VerificationStatus.APPROVED,
-  });
-  const eligibleListing = await prisma.listing.create({
-    data: {
-      sellerId: eligible.user.id,
-      categoryId,
-      title: "Eligible listing",
-      description: "Public eligibility fixture.",
-      price: 10,
-      condition: "USED",
-      location: "Campus",
-      status: ListingStatus.PUBLISHED,
-    },
-  });
-  const hiddenListings = await Promise.all(
-    [pending, suspended, disabled, approvedNonStudent].map((actor) =>
-      prisma.listing.create({
-        data: {
-          sellerId: actor.user.id,
-          categoryId,
-          title: "Ineligible listing",
-          description: "Public eligibility fixture.",
-          price: 10,
-          condition: "USED",
-          location: "Campus",
-          status: ListingStatus.PUBLISHED,
-        },
-      }),
-    ),
-  );
+test("public listing eligibility and active-category filtering are enforced", async () => {
+  const eligible = await createActor({ verificationStatus: VerificationStatus.PENDING });
+  const unverified = await createActor({ emailVerified: false });
+  const suspended = await createActor({ accountStatus: AccountStatus.SUSPENDED });
+  const disabled = await createActor({ accountStatus: AccountStatus.DISABLED });
+  const administrator = await createActor({ role: Role.ADMINISTRATOR });
+  const visible = await prisma.listing.create({ data: { sellerId: eligible.user.id, ...createListingPayload(), status: ListingStatus.PUBLISHED } });
+  const visibleNonStudent = await prisma.listing.create({ data: { sellerId: administrator.user.id, ...createListingPayload(), status: ListingStatus.PUBLISHED } });
+  const hidden = await Promise.all([unverified, suspended, disabled].map((actor) =>
+    prisma.listing.create({ data: { sellerId: actor.user.id, ...createListingPayload(), status: ListingStatus.PUBLISHED } }),
+  ));
 
   const feed = await app.inject({ method: "GET", url: "/api/v1/listings" });
   assert.equal(feed.statusCode, 200);
-  const feedIds = new Set(feed.json().items.map((item: { id: string }) => item.id));
-  assert.equal(feedIds.has(eligibleListing.id), true);
-  for (const listing of hiddenListings) assert.equal(feedIds.has(listing.id), false);
-
-  for (const listing of hiddenListings) {
-    const detail = await app.inject({ method: "GET", url: `/api/v1/listings/${listing.id}` });
-    assert.equal(detail.statusCode, 404);
+  const ids = new Set(feed.json().items.map((item: { id: string }) => item.id));
+  assert.equal(ids.has(visible.id), true);
+  assert.equal(ids.has(visibleNonStudent.id), true);
+  for (const listing of hidden) {
+    assert.equal(ids.has(listing.id), false);
+    assert.equal((await app.inject({ method: "GET", url: `/api/v1/listings/${listing.id}` })).statusCode, 404);
   }
 
   await prisma.category.update({ where: { id: categoryId }, data: { isActive: false } });
   try {
-    const inactiveCategoryFeed = await app.inject({ method: "GET", url: "/api/v1/listings" });
-    assert.equal(inactiveCategoryFeed.statusCode, 200);
-    assert.equal(
-      new Set(inactiveCategoryFeed.json().items.map((item: { id: string }) => item.id)).has(eligibleListing.id),
-      false,
-    );
-    const inactiveCategoryDetail = await app.inject({
-      method: "GET",
-      url: `/api/v1/listings/${eligibleListing.id}`,
-    });
-    assert.equal(inactiveCategoryDetail.statusCode, 404);
+    const inactiveFeed = await app.inject({ method: "GET", url: "/api/v1/listings" });
+    assert.equal(inactiveFeed.statusCode, 200);
+    assert.equal(new Set(inactiveFeed.json().items.map((item: { id: string }) => item.id)).has(visible.id), false);
+    assert.equal((await app.inject({ method: "GET", url: `/api/v1/listings/${visible.id}` })).statusCode, 404);
   } finally {
     await prisma.category.update({ where: { id: categoryId }, data: { isActive: true } });
   }
 });
 
-test("listing image batch retries are idempotent and reject changed content", async () => {
-  const seller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+test("listing image upload retries are idempotent and reject changed content", async () => {
+  const seller = await createActor({ verificationStatus: VerificationStatus.PENDING });
   const listing = await createDraftListing(seller.user.id);
   const batchId = randomUUID();
-  const makeImage = (color: string) =>
-    sharp({
-      create: { width: 2, height: 2, channels: 4, background: color },
-    }).png().toBuffer();
+  const makeImage = (color: string) => sharp({ create: { width: 2, height: 2, channels: 4, background: color } }).png().toBuffer();
   const originalBuffer = await makeImage("red");
   let objectKeys: string[] = [];
-
   try {
-    const [first, concurrentRetry] = await Promise.all([
+    const [first, retry] = await Promise.all([
       addListingImages(listing.id, seller.user.id, [{ mimetype: "image/png", buffer: originalBuffer }], batchId),
       addListingImages(listing.id, seller.user.id, [{ mimetype: "image/png", buffer: originalBuffer }], batchId),
     ]);
     assert.equal(first.length, 1);
-    assert.equal(concurrentRetry.length, 1);
-    assert.equal(first[0]?.id, concurrentRetry[0]?.id);
+    assert.equal(retry.length, 1);
+    assert.equal(first[0]?.id, retry[0]?.id);
     assert.equal(await prisma.listingImage.count({ where: { listingId: listing.id } }), 1);
-
     const changedBuffer = await makeImage("blue");
     await assert.rejects(
-      () => addListingImages(
-        listing.id,
-        seller.user.id,
-        [{ mimetype: "image/png", buffer: changedBuffer }],
-        batchId,
-      ),
-      (error: unknown) =>
-        error instanceof AppError && error.code === "UPLOAD_RETRY_MISMATCH",
+      () => addListingImages(listing.id, seller.user.id, [{ mimetype: "image/png", buffer: changedBuffer }], batchId),
+      (error: unknown) => error instanceof AppError && error.code === "UPLOAD_RETRY_MISMATCH",
     );
     assert.equal(await prisma.listingImage.count({ where: { listingId: listing.id } }), 1);
-    objectKeys = (await prisma.listingImage.findMany({
-      where: { listingId: listing.id },
-      select: { objectKey: true },
-    })).map((image) => image.objectKey);
+    objectKeys = (await prisma.listingImage.findMany({ where: { listingId: listing.id }, select: { objectKey: true } })).map((image) => image.objectKey);
   } finally {
-    if (objectKeys.length > 0) await deleteListingImageFiles(objectKeys);
+    if (objectKeys.length) await deleteListingImageFiles(objectKeys);
     await prisma.listingImage.deleteMany({ where: { listingId: listing.id } });
     await prisma.listing.delete({ where: { id: listing.id } });
   }
 });
 
-test("image readback failure after commit preserves referenced files and rows", async () => {
-  const seller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+test("post-commit image readback failure preserves committed file and row", async () => {
+  const seller = await createActor();
   const listing = await createDraftListing(seller.user.id);
-  const buffer = await sharp({
-    create: { width: 2, height: 2, channels: 4, background: "purple" },
-  }).png().toBuffer();
-  const listingImageDelegate = prisma.listingImage as unknown as {
-    findMany: typeof prisma.listingImage.findMany;
-  };
-  const originalFindMany = listingImageDelegate.findMany;
-
+  const buffer = await sharp({ create: { width: 2, height: 2, channels: 4, background: "purple" } }).png().toBuffer();
+  const delegate = prisma.listingImage as unknown as { findMany: typeof prisma.listingImage.findMany };
+  const originalFindMany = delegate.findMany;
   try {
-    listingImageDelegate.findMany = async () => {
-      throw new Error("simulated post-commit readback failure");
-    };
-    await assert.rejects(
-      () => addListingImages(
-        listing.id,
-        seller.user.id,
-        [{ mimetype: "image/png", buffer }],
-        randomUUID(),
-      ),
-      /simulated post-commit readback failure/,
-    );
+    delegate.findMany = async () => { throw new Error("simulated post-commit readback failure"); };
+    await assert.rejects(() => addListingImages(listing.id, seller.user.id, [{ mimetype: "image/png", buffer }], randomUUID()), /simulated post-commit readback failure/);
   } finally {
-    listingImageDelegate.findMany = originalFindMany;
+    delegate.findMany = originalFindMany;
   }
-
-  const persisted = await prisma.listingImage.findFirst({
-    where: { listingId: listing.id },
-    select: { id: true, objectKey: true },
-  });
+  const persisted = await prisma.listingImage.findFirst({ where: { listingId: listing.id }, select: { objectKey: true } });
   try {
     assert.ok(persisted);
     await readFile(path.resolve(process.cwd(), "uploads", ...persisted.objectKey.split("/")));
@@ -602,154 +535,122 @@ test("image readback failure after commit preserves referenced files and rows", 
   }
 });
 
-test("concurrent image uploads cannot exceed the eight-image listing cap", async () => {
-  const seller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
-  const listing = await createDraftListing(seller.user.id);
-  await prisma.listingImage.createMany({
-    data: Array.from({ length: 7 }, (_, sortOrder) => ({
-      listingId: listing.id,
-      objectKey: createListingObjectKey(listing.id, "image/png"),
-      sortOrder,
-      processingStatus: "READY" as const,
-    })),
-  });
-  const buffer = await sharp({
-    create: { width: 2, height: 2, channels: 4, background: "green" },
-  }).png().toBuffer();
+function describeSettledOutcome(outcome: PromiseSettledResult<unknown> | undefined): string {
+  try {
+    if (!outcome) return "no result";
+    if (outcome.status === "fulfilled") return "fulfilled";
 
+    const reason: unknown = outcome.reason;
+    if (reason !== null && (typeof reason === "object" || typeof reason === "function")) {
+      const readField = (field: string): unknown => {
+        try {
+          return Reflect.get(reason, field);
+        } catch {
+          return undefined;
+        }
+      };
+      const formatField = (field: string, fallback: string): string => {
+        const value = readField(field);
+        if (value === undefined) return fallback;
+        try {
+          return String(value);
+        } catch {
+          return "<unprintable>";
+        }
+      };
+
+      const name = formatField("name", "object");
+      const message = formatField("message", "<no message>");
+      const codeValue = readField("code");
+      const code = codeValue === undefined ? "" : `, code=${formatField("code", "<unprintable>")}`;
+      return `rejected: ${name}: ${message}${code}`;
+    }
+
+    try {
+      return `rejected: ${typeof reason}: ${String(reason)}`;
+    } catch {
+      return `rejected: ${typeof reason}: <unprintable>`;
+    }
+  } catch {
+    return "rejected: <diagnostic formatting failed>";
+  }
+}
+
+test("concurrent image uploads respect the listing image cap", async () => {
+  const seller = await createActor();
+  const listing = await createDraftListing(seller.user.id);
+  await prisma.listingImage.createMany({ data: Array.from({ length: 7 }, (_, sortOrder) => ({
+    listingId: listing.id, objectKey: createListingObjectKey(listing.id, "image/png"), sortOrder, processingStatus: "READY" as const,
+  })) });
+  const buffer = await sharp({ create: { width: 2, height: 2, channels: 4, background: "green" } }).png().toBuffer();
   try {
     const outcomes = await Promise.allSettled([
       addListingImages(listing.id, seller.user.id, [{ mimetype: "image/png", buffer }], randomUUID()),
       addListingImages(listing.id, seller.user.id, [{ mimetype: "image/png", buffer }], randomUUID()),
     ]);
-    assert.equal(outcomes.filter((outcome) => outcome.status === "fulfilled").length, 1);
+    assert.equal(
+      outcomes.filter((outcome) => outcome.status === "fulfilled").length,
+      1,
+      `Expected one upload to succeed; outcomes: ${outcomes.map(describeSettledOutcome).join(" | ")}`,
+    );
     const rejected = outcomes.find((outcome) => outcome.status === "rejected");
-    assert.ok(rejected && rejected.status === "rejected");
-    assert.ok(rejected.reason instanceof AppError);
-    assert.equal(rejected.reason.code, "VALIDATION_ERROR");
+    assert.ok(
+      rejected && rejected.status === "rejected",
+      `Expected one rejected upload; outcomes: ${outcomes.map(describeSettledOutcome).join(" | ")}`,
+    );
+    assert.ok(rejected.reason instanceof AppError, describeSettledOutcome(rejected));
+    assert.equal(rejected.reason.code, "VALIDATION_ERROR", describeSettledOutcome(rejected));
     assert.equal(await prisma.listingImage.count({ where: { listingId: listing.id } }), 8);
   } finally {
-    const images = await prisma.listingImage.findMany({
-      where: { listingId: listing.id },
-      select: { objectKey: true },
-    });
+    const images = await prisma.listingImage.findMany({ where: { listingId: listing.id }, select: { objectKey: true } });
     await deleteListingImageFiles(images.map((image) => image.objectKey));
     await prisma.listingImage.deleteMany({ where: { listingId: listing.id } });
     await prisma.listing.delete({ where: { id: listing.id } });
   }
 });
 
-test("image removal is soft, owner-scoped, and preserves active ordering and files", async () => {
-  const owner = await createActor({ verificationStatus: VerificationStatus.APPROVED });
-  const otherSeller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
-  const unverifiedSeller = await createActor();
+test("image removal preserves ownership, soft history, files, and active ordering", async () => {
+  const owner = await createActor();
+  const other = await createActor();
+  const unverified = await createActor({ emailVerified: false });
   const listing = await createDraftListing(owner.user.id);
-  const buffer = await sharp({
-    create: { width: 2, height: 2, channels: 4, background: "orange" },
-  }).png().toBuffer();
+  const buffer = await sharp({ create: { width: 2, height: 2, channels: 4, background: "orange" } }).png().toBuffer();
   const objectKeys: string[] = [];
-
   try {
-    const [first] = await addListingImages(
-      listing.id,
-      owner.user.id,
-      [{ mimetype: "image/png", buffer }],
-      randomUUID(),
-    );
-    objectKeys.push(first.objectKey);
-    const [second] = await addListingImages(
-      listing.id,
-      owner.user.id,
-      [{ mimetype: "image/png", buffer }],
-      randomUUID(),
-    );
+    const [first] = await addListingImages(listing.id, owner.user.id, [{ mimetype: "image/png", buffer }], randomUUID());
+    const [second] = await addListingImages(listing.id, owner.user.id, [{ mimetype: "image/png", buffer }], randomUUID());
     assert.ok(first && second);
-    objectKeys.push(second.objectKey);
-
-    await assert.rejects(
-      () => addListingImages(
-        listing.id,
-        unverifiedSeller.user.id,
-        [{ mimetype: "image/png", buffer }],
-        randomUUID(),
-      ),
-      (error: unknown) => error instanceof AppError && error.code === "SELLER_VERIFICATION_REQUIRED",
-    );
-
-    const publish = await app.inject({
-      method: "POST",
-      url: `/api/v1/listings/${listing.id}/publish`,
-      headers: authHeaders(owner.sessionToken),
+    objectKeys.push(first.objectKey, second.objectKey);
+    await assert.rejects(() => addListingImages(listing.id, unverified.user.id, [{ mimetype: "image/png", buffer }], randomUUID()),
+      (error: unknown) => error instanceof AppError && error.code === "SELLER_EMAIL_UNVERIFIED");
+    const uploadDenied = await app.inject({
+      method: "POST", url: `/api/v1/listings/${listing.id}/images`, headers: authHeaders(unverified.sessionToken),
     });
+    assert.equal(uploadDenied.statusCode, 403);
+    assert.equal(uploadDenied.json().error.code, "SELLER_EMAIL_UNVERIFIED");
+    const publish = await app.inject({ method: "POST", url: `/api/v1/listings/${listing.id}/publish`, headers: authHeaders(owner.sessionToken) });
     assert.equal(publish.statusCode, 200);
-
     const imageUrl = `/api/v1/listings/${listing.id}/images/${first.id}`;
-    const forbidden = await app.inject({
-      method: "DELETE",
-      url: imageUrl,
-      headers: authHeaders(otherSeller.sessionToken),
-    });
-    assert.equal(forbidden.statusCode, 403);
-
-    const unverifiedRemoval = await app.inject({
-      method: "DELETE",
-      url: imageUrl,
-      headers: authHeaders(unverifiedSeller.sessionToken),
-    });
-    assert.equal(unverifiedRemoval.statusCode, 403);
-    assert.equal(unverifiedRemoval.json().error.code, "SELLER_VERIFICATION_REQUIRED");
-
-    const removed = await app.inject({
-      method: "DELETE",
-      url: imageUrl,
-      headers: authHeaders(owner.sessionToken),
-    });
-    assert.equal(removed.statusCode, 200);
-    assert.equal(removed.json().image.id, first.id);
-
-    const historical = await prisma.listingImage.findUnique({
-      where: { id: first.id },
-      select: { removedAt: true, objectKey: true },
-    });
+    assert.equal((await app.inject({ method: "DELETE", url: imageUrl, headers: authHeaders(other.sessionToken) })).statusCode, 403);
+    const denied = await app.inject({ method: "DELETE", url: imageUrl, headers: authHeaders(unverified.sessionToken) });
+    assert.equal(denied.statusCode, 403);
+    assert.equal(denied.json().error.code, "SELLER_EMAIL_UNVERIFIED");
+    assert.equal((await app.inject({ method: "DELETE", url: imageUrl, headers: authHeaders(owner.sessionToken) })).statusCode, 200);
+    const historical = await prisma.listingImage.findUnique({ where: { id: first.id }, select: { removedAt: true, objectKey: true } });
     assert.ok(historical?.removedAt);
     await readFile(path.resolve(process.cwd(), "uploads", ...first.objectKey.split("/")));
-
-    const edit = await app.inject({
-      method: "GET",
-      url: `/api/v1/listings/${listing.id}/edit`,
-      headers: authHeaders(owner.sessionToken),
-    });
-    assert.equal(edit.statusCode, 200);
+    const edit = await app.inject({ method: "GET", url: `/api/v1/listings/${listing.id}/edit`, headers: authHeaders(owner.sessionToken) });
     assert.deepEqual(edit.json().listing.images.map((image: { id: string }) => image.id), [second.id]);
-
     const publicDetail = await app.inject({ method: "GET", url: `/api/v1/listings/${listing.id}` });
-    assert.equal(publicDetail.statusCode, 200);
     assert.deepEqual(publicDetail.json().listing.images.map((image: { id: string }) => image.id), [second.id]);
     const publicFeed = await app.inject({ method: "GET", url: `/api/v1/listings?categoryId=${categoryId}` });
-    const feedListing = publicFeed.json().items.find((item: { id: string }) => item.id === listing.id);
-    assert.deepEqual(feedListing?.images.map((image: { id: string }) => image.id), [second.id]);
-    const sellerListings = await app.inject({
-      method: "GET",
-      url: "/api/v1/listings/me",
-      headers: authHeaders(owner.sessionToken),
-    });
-    const sellerListing = sellerListings.json().items.find((item: { id: string }) => item.id === listing.id);
-    assert.deepEqual(sellerListing?.images.map((image: { id: string }) => image.id), [second.id]);
-
-    const [third] = await addListingImages(
-      listing.id,
-      owner.user.id,
-      [{ mimetype: "image/png", buffer }],
-      randomUUID(),
-    );
+    assert.deepEqual(publicFeed.json().items.find((item: { id: string }) => item.id === listing.id)?.images.map((image: { id: string }) => image.id), [second.id]);
+    const sellerFeed = await app.inject({ method: "GET", url: "/api/v1/listings/me", headers: authHeaders(owner.sessionToken) });
+    assert.deepEqual(sellerFeed.json().items.find((item: { id: string }) => item.id === listing.id)?.images.map((image: { id: string }) => image.id), [second.id]);
+    const [third] = await addListingImages(listing.id, owner.user.id, [{ mimetype: "image/png", buffer }], randomUUID());
     assert.ok(third);
     objectKeys.push(third.objectKey);
-
-    const rows = await prisma.listingImage.findMany({
-      where: { listingId: listing.id },
-      orderBy: { sortOrder: "asc" },
-      select: { id: true, sortOrder: true, removedAt: true },
-    });
+    const rows = await prisma.listingImage.findMany({ where: { listingId: listing.id }, orderBy: { sortOrder: "asc" }, select: { sortOrder: true, removedAt: true } });
     assert.deepEqual(rows.map((image) => image.sortOrder), [0, 1, 2]);
     assert.equal(rows.filter((image) => image.removedAt === null).length, 2);
     assert.equal(rows.length, 3);
@@ -760,50 +661,38 @@ test("image removal is soft, owner-scoped, and preserves active ordering and fil
   }
 });
 
-test("concurrent image removal and upload preserve listing constraints", async () => {
-  const owner = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+test("concurrent image removal and upload preserve image-count and sort invariants", async () => {
+  const owner = await createActor();
   const listing = await createDraftListing(owner.user.id);
-  const seeded = await prisma.listingImage.createManyAndReturn({
-    data: Array.from({ length: 8 }, (_, sortOrder) => ({
-      listingId: listing.id,
-      objectKey: createListingObjectKey(listing.id, "image/png"),
-      sortOrder,
-      processingStatus: "READY" as const,
-    })),
-  });
-  const buffer = await sharp({
-    create: { width: 2, height: 2, channels: 4, background: "teal" },
-  }).png().toBuffer();
-  let uploadedObjectKeys: string[] = [];
-
+  const seeded = await prisma.listingImage.createManyAndReturn({ data: Array.from({ length: 8 }, (_, sortOrder) => ({
+    listingId: listing.id, objectKey: createListingObjectKey(listing.id, "image/png"), sortOrder, processingStatus: "READY" as const,
+  })) });
+  const buffer = await sharp({ create: { width: 2, height: 2, channels: 4, background: "teal" } }).png().toBuffer();
   try {
     const outcomes = await Promise.allSettled([
       removeListingImage(listing.id, seeded[0]!.id, owner.user.id),
       addListingImages(listing.id, owner.user.id, [{ mimetype: "image/png", buffer }], randomUUID()),
     ]);
-    assert.equal(outcomes[0]?.status, "fulfilled");
+    assert.equal(
+      outcomes[0]?.status,
+      "fulfilled",
+      `Image removal outcome: ${describeSettledOutcome(outcomes[0])}`,
+    );
     if (outcomes[1]?.status === "rejected") {
-      assert.ok(outcomes[1].reason instanceof AppError);
-      assert.equal(outcomes[1].reason.code, "VALIDATION_ERROR");
+      assert.ok(outcomes[1].reason instanceof AppError, describeSettledOutcome(outcomes[1]));
+      assert.equal(outcomes[1].reason.code, "VALIDATION_ERROR", describeSettledOutcome(outcomes[1]));
     }
-
-    const rows = await prisma.listingImage.findMany({
-      where: { listingId: listing.id },
-      orderBy: { sortOrder: "asc" },
-      select: { objectKey: true, sortOrder: true, removedAt: true },
-    });
-    uploadedObjectKeys = rows.map((image) => image.objectKey);
-    const active = rows.filter((image) => image.removedAt === null);
-    assert.ok(active.length <= 8);
+    const rows = await prisma.listingImage.findMany({ where: { listingId: listing.id }, orderBy: { sortOrder: "asc" }, select: { objectKey: true, sortOrder: true, removedAt: true } });
+    assert.ok(rows.filter((image) => image.removedAt === null).length <= 8);
     assert.equal(new Set(rows.map((image) => image.sortOrder)).size, rows.length);
+    await deleteListingImageFiles(rows.map((image) => image.objectKey));
   } finally {
-    if (uploadedObjectKeys.length > 0) await deleteListingImageFiles(uploadedObjectKeys);
     await prisma.listingImage.deleteMany({ where: { listingId: listing.id } });
     await prisma.listing.delete({ where: { id: listing.id } });
   }
 });
 
-test("listing updates require a verified active owner and reject protected fields", async (t) => {
+test("listing updates require an email-verified active owner and reject protected fields", async (t) => {
   const verifiedOwner = await createActor({
     verificationStatus: VerificationStatus.APPROVED,
   });
@@ -819,8 +708,8 @@ test("listing updates require a verified active owner and reject protected field
     assert.equal(response.statusCode, 401);
   });
 
-  await t.test("unverified update is denied", async () => {
-    const unverified = await createActor({ hasProfile: false });
+  await t.test("unverified email update is denied", async () => {
+    const unverified = await createActor({ hasProfile: false, emailVerified: false });
     const response = await app.inject({
       method: "PATCH",
       url: updateUrl,
@@ -828,7 +717,7 @@ test("listing updates require a verified active owner and reject protected field
       payload: { title: "Updated title" },
     });
     assert.equal(response.statusCode, 403);
-    assert.equal(response.json().error.code, "SELLER_VERIFICATION_REQUIRED");
+    assert.equal(response.json().error.code, "SELLER_EMAIL_UNVERIFIED");
   });
 
   for (const accountStatus of [AccountStatus.SUSPENDED, AccountStatus.DISABLED]) {
@@ -847,7 +736,7 @@ test("listing updates require a verified active owner and reject protected field
     });
   }
 
-  await t.test("verified owner can update editable fields without changing status", async () => {
+  await t.test("email-verified owner can update editable fields without changing status", async () => {
     const response = await app.inject({
       method: "PATCH",
       url: updateUrl,
@@ -863,7 +752,7 @@ test("listing updates require a verified active owner and reject protected field
     assert.equal(persisted?.sellerId, verifiedOwner.user.id);
   });
 
-  await t.test("another verified student cannot update the listing", async () => {
+  await t.test("another email-verified student cannot update the listing", async () => {
     const otherSeller = await createActor({
       verificationStatus: VerificationStatus.APPROVED,
     });
@@ -904,7 +793,7 @@ test("listing updates require a verified active owner and reject protected field
     for (const payload of [
       { title: "" },
       { price: -1 },
-      { price: 10_000_000_000 },
+      { price: MAX_LISTING_PRICE + 0.01 },
       { condition: "BROKEN" },
       { categoryId: "not-a-uuid" },
       {},
@@ -926,7 +815,11 @@ test("listing updates require a verified active owner and reject protected field
       url: `${updateUrl}/publish`,
       headers: authHeaders(verifiedOwner.sessionToken),
     });
-    assert.equal(publish.statusCode, 200);
+    assert.equal(
+      publish.statusCode,
+      200,
+      `Publish response status=${publish.statusCode}, body=${publish.body}`,
+    );
     assert.equal(publish.json().listing.status, ListingStatus.PUBLISHED);
 
     const republish = await app.inject({
@@ -936,50 +829,38 @@ test("listing updates require a verified active owner and reject protected field
     });
     assert.equal(republish.statusCode, 409);
 
-    const editPublished = await app.inject({
-      method: "PATCH",
-      url: updateUrl,
-      headers: authHeaders(verifiedOwner.sessionToken),
-      payload: { title: "Must remain unchanged" },
+    const restrictedEdit = await app.inject({
+      method: "PATCH", url: updateUrl, headers: authHeaders(verifiedOwner.sessionToken),
+      payload: { title: "Cannot change published title" },
     });
-    assert.equal(editPublished.statusCode, 422);
-    assert.equal(editPublished.json().error.code, "PUBLISHED_LISTING_FIELDS_RESTRICTED");
-
+    assert.equal(restrictedEdit.statusCode, 422);
+    assert.equal(restrictedEdit.json().error.code, "PUBLISHED_LISTING_FIELDS_RESTRICTED");
     const publishedEdit = await app.inject({
-      method: "PATCH",
-      url: updateUrl,
-      headers: authHeaders(verifiedOwner.sessionToken),
+      method: "PATCH", url: updateUrl, headers: authHeaders(verifiedOwner.sessionToken),
       payload: { price: 35, description: "Updated public description." },
     });
     assert.equal(publishedEdit.statusCode, 200);
     assert.equal(publishedEdit.json().listing.status, ListingStatus.PUBLISHED);
     assert.equal(publishedEdit.json().listing.price, "35");
     assert.equal(publishedEdit.json().listing.description, "Updated public description.");
+    const publicEdit = await app.inject({ method: "GET", url: `/api/v1/listings/${listing.id}` });
+    assert.equal(publicEdit.json().listing.price, "35");
+    assert.equal(publicEdit.json().listing.description, "Updated public description.");
+    const feedEdit = await app.inject({ method: "GET", url: `/api/v1/listings?categoryId=${categoryId}` });
+    const editedFeedListing = feedEdit.json().items.find((item: { id: string }) => item.id === listing.id);
+    assert.equal(editedFeedListing.price, "35");
+    assert.equal(editedFeedListing.description, "Updated public description.");
 
-    const publicDetail = await app.inject({ method: "GET", url: `/api/v1/listings/${listing.id}` });
-    assert.equal(publicDetail.statusCode, 200);
-    assert.equal(publicDetail.json().listing.price, "35");
-    assert.equal(publicDetail.json().listing.description, "Updated public description.");
-    const publicFeed = await app.inject({ method: "GET", url: `/api/v1/listings?categoryId=${categoryId}` });
-    assert.equal(publicFeed.statusCode, 200);
-    const refreshedFeedListing = publicFeed.json().items.find((item: { id: string }) => item.id === listing.id);
-    assert.equal(refreshedFeedListing?.price, "35");
-    assert.equal(refreshedFeedListing?.description, "Updated public description.");
-
-    const unverifiedOwner = await createActor();
-    const unverifiedEdit = await app.inject({
+    const unverifiedEmailOwner = await createActor({ emailVerified: false });
+    const unverifiedPublishedEdit = await app.inject({
       method: "PATCH",
       url: updateUrl,
-      headers: authHeaders(unverifiedOwner.sessionToken),
+      headers: authHeaders(unverifiedEmailOwner.sessionToken),
       payload: { price: 40 },
     });
-    assert.equal(unverifiedEdit.statusCode, 403);
-    assert.equal(unverifiedEdit.json().error.code, "SELLER_VERIFICATION_REQUIRED");
-
-    assert.equal(
-      (await prisma.listing.findUnique({ where: { id: listing.id } }))?.title,
-      "Updated title",
-    );
+    assert.equal(unverifiedPublishedEdit.statusCode, 403);
+    assert.equal(unverifiedPublishedEdit.json().error.code, "SELLER_EMAIL_UNVERIFIED");
+    assert.equal((await prisma.listing.findUnique({ where: { id: listing.id } }))?.price.toString(), "35");
 
     const unsupportedTransition = await app.inject({
       method: "PATCH",
@@ -991,30 +872,19 @@ test("listing updates require a verified active owner and reject protected field
 
     for (const status of [ListingStatus.RESERVED, ListingStatus.SOLD, ListingStatus.SUSPENDED, ListingStatus.REMOVED]) {
       await prisma.listing.update({ where: { id: listing.id }, data: { status } });
-      const deniedEdit = await app.inject({
-        method: "PATCH",
-        url: updateUrl,
-        headers: authHeaders(verifiedOwner.sessionToken),
-        payload: { price: 36 },
-      });
+      const deniedEdit = await app.inject({ method: "PATCH", url: updateUrl, headers: authHeaders(verifiedOwner.sessionToken), payload: { price: 36 } });
       assert.equal(deniedEdit.statusCode, 409, `${status} listing must not be editable`);
-
-      const deniedImageRemoval = await app.inject({
-        method: "DELETE",
-        url: `/api/v1/listings/${listing.id}/images/${statusImage.id}`,
-        headers: authHeaders(verifiedOwner.sessionToken),
-      });
+      const deniedImageRemoval = await app.inject({ method: "DELETE", url: `/api/v1/listings/${listing.id}/images/${statusImage.id}`, headers: authHeaders(verifiedOwner.sessionToken) });
       assert.equal(deniedImageRemoval.statusCode, 409, `${status} listing images must not be editable`);
     }
   });
 });
 
-test("listing removal requires a verified active owner and uses soft removal", async (t) => {
+test("listing removal requires an email-verified active owner and uses soft removal", async (t) => {
   const owner = await createActor({
     verificationStatus: VerificationStatus.APPROVED,
   });
   const listing = await createDraftListing(owner.user.id);
-  const draftImage = await createReadyListingImage(listing.id);
   const removeUrl = `/api/v1/listings/${listing.id}`;
 
   await t.test("unauthenticated removal is denied", async () => {
@@ -1025,15 +895,15 @@ test("listing removal requires a verified active owner and uses soft removal", a
     assert.equal(response.statusCode, 401);
   });
 
-  await t.test("unverified seller removal is denied", async () => {
-    const unverified = await createActor({ hasProfile: false });
+  await t.test("unverified email seller removal is denied", async () => {
+    const unverified = await createActor({ hasProfile: false, emailVerified: false });
     const response = await app.inject({
       method: "DELETE",
       url: removeUrl,
       headers: authHeaders(unverified.sessionToken),
     });
     assert.equal(response.statusCode, 403);
-    assert.equal(response.json().error.code, "SELLER_VERIFICATION_REQUIRED");
+    assert.equal(response.json().error.code, "SELLER_EMAIL_UNVERIFIED");
   });
 
   for (const accountStatus of [AccountStatus.SUSPENDED, AccountStatus.DISABLED]) {
@@ -1051,7 +921,7 @@ test("listing removal requires a verified active owner and uses soft removal", a
     });
   }
 
-  await t.test("another verified student cannot remove the listing", async () => {
+  await t.test("another email-verified student cannot remove the listing", async () => {
     const otherSeller = await createActor({
       verificationStatus: VerificationStatus.APPROVED,
     });
@@ -1067,40 +937,20 @@ test("listing removal requires a verified active owner and uses soft removal", a
       (await prisma.listing.findUnique({ where: { id: listing.id } }))?.status,
       ListingStatus.DRAFT,
     );
-    assert.equal(
-      (await prisma.listingImage.findUnique({ where: { id: draftImage.id } }))?.removedAt,
-      null,
-    );
   });
 
-  await t.test("concurrent owner requests remove an eligible draft only once", async () => {
-    const responses = await Promise.all([
-      app.inject({
-        method: "DELETE",
-        url: removeUrl,
-        headers: authHeaders(owner.sessionToken),
-      }),
-      app.inject({
-        method: "DELETE",
-        url: removeUrl,
-        headers: authHeaders(owner.sessionToken),
-      }),
-    ]);
-    assert.deepEqual(
-      responses.map((response) => response.statusCode).sort(),
-      [200, 409],
-    );
-    const success = responses.find((response) => response.statusCode === 200);
-    assert.equal(success?.json().listing.status, ListingStatus.REMOVED);
+  await t.test("owner removal marks the listing REMOVED without deleting it", async () => {
+    const response = await app.inject({
+      method: "DELETE",
+      url: removeUrl,
+      headers: authHeaders(owner.sessionToken),
+    });
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().listing.status, ListingStatus.REMOVED);
 
     const persisted = await prisma.listing.findUnique({ where: { id: listing.id } });
     assert.ok(persisted);
     assert.equal(persisted.status, ListingStatus.REMOVED);
-    const persistedImage = await prisma.listingImage.findUnique({
-      where: { id: draftImage.id },
-    });
-    assert.ok(persistedImage);
-    assert.equal(persistedImage.removedAt, null);
 
     const repeatedRemoval = await app.inject({
       method: "DELETE",
@@ -1109,63 +959,51 @@ test("listing removal requires a verified active owner and uses soft removal", a
     });
     assert.equal(repeatedRemoval.statusCode, 409);
   });
+});
 
-  await t.test("owner can withdraw a published listing without removing its image", async () => {
-    const published = await createDraftListing(owner.user.id);
-    await prisma.listing.update({
-      where: { id: published.id },
-      data: { status: ListingStatus.PUBLISHED },
-    });
-    const image = await createReadyListingImage(published.id);
+test("listing removal preserves image history and rejects concurrent or invalid transitions", async (t) => {
+  const owner = await createActor({ verificationStatus: VerificationStatus.REJECTED });
+  const listing = await createDraftListing(owner.user.id);
+  const image = await createReadyListingImage(listing.id);
+  const removeUrl = `/api/v1/listings/${listing.id}`;
 
-    const response = await app.inject({
-      method: "DELETE",
-      url: `/api/v1/listings/${published.id}`,
-      headers: authHeaders(owner.sessionToken),
-    });
-    assert.equal(response.statusCode, 200);
-    assert.equal(response.json().listing.status, ListingStatus.REMOVED);
-    assert.equal(
-      (await prisma.listing.findUnique({ where: { id: published.id } }))?.status,
-      ListingStatus.REMOVED,
-    );
-    const persistedImage = await prisma.listingImage.findUnique({
-      where: { id: image.id },
-    });
-    assert.ok(persistedImage);
-    assert.equal(persistedImage.removedAt, null);
+  await t.test("concurrent owner requests remove an eligible draft only once", async () => {
+    const responses = await Promise.all([
+      app.inject({ method: "DELETE", url: removeUrl, headers: authHeaders(owner.sessionToken) }),
+      app.inject({ method: "DELETE", url: removeUrl, headers: authHeaders(owner.sessionToken) }),
+    ]);
+    assert.deepEqual(responses.map((response) => response.statusCode).sort(), [200, 409]);
+    const persisted = await prisma.listing.findUnique({ where: { id: listing.id } });
+    assert.equal(persisted?.status, ListingStatus.REMOVED);
   });
+
+  const persistedImage = await prisma.listingImage.findUnique({ where: { id: image.id } });
+  assert.ok(persistedImage);
+  assert.equal(persistedImage.removedAt, null);
+
+  const published = await createDraftListing(owner.user.id);
+  await prisma.listing.update({ where: { id: published.id }, data: { status: ListingStatus.PUBLISHED } });
+  const publishedImage = await createReadyListingImage(published.id);
+  const withdrawn = await app.inject({ method: "DELETE", url: `/api/v1/listings/${published.id}`, headers: authHeaders(owner.sessionToken) });
+  assert.equal(withdrawn.statusCode, 200);
+  assert.equal(withdrawn.json().listing.status, ListingStatus.REMOVED);
+  assert.equal((await prisma.listingImage.findUnique({ where: { id: publishedImage.id } }))?.removedAt, null);
 
   for (const status of [ListingStatus.RESERVED, ListingStatus.SUSPENDED]) {
     await t.test(`owner cannot remove a ${status} listing`, async () => {
-      const ineligible = await createDraftListing(owner.user.id);
-      await prisma.listing.update({
-        where: { id: ineligible.id },
-        data: { status },
-      });
-      const image = await createReadyListingImage(ineligible.id);
-
-      const response = await app.inject({
-        method: "DELETE",
-        url: `/api/v1/listings/${ineligible.id}`,
-        headers: authHeaders(owner.sessionToken),
-      });
+      const blocked = await createDraftListing(owner.user.id);
+      await prisma.listing.update({ where: { id: blocked.id }, data: { status } });
+      const blockedImage = await createReadyListingImage(blocked.id);
+      const response = await app.inject({ method: "DELETE", url: `/api/v1/listings/${blocked.id}`, headers: authHeaders(owner.sessionToken) });
       assert.equal(response.statusCode, 409);
       assert.equal(response.json().error.code, "INVALID_LISTING_STATUS");
-      assert.equal(
-        (await prisma.listing.findUnique({ where: { id: ineligible.id } }))?.status,
-        status,
-      );
-      const persistedImage = await prisma.listingImage.findUnique({
-        where: { id: image.id },
-      });
-      assert.ok(persistedImage);
-      assert.equal(persistedImage.removedAt, null);
+      assert.equal((await prisma.listing.findUnique({ where: { id: blocked.id } }))?.status, status);
+      assert.equal((await prisma.listingImage.findUnique({ where: { id: blockedImage.id } }))?.removedAt, null);
     });
   }
 });
 
-test("listing creation requires an active, verified student session", async (t) => {
+test("listing creation requires an active, email-verified account", async (t) => {
   const payload = createListingPayload();
 
   const unauthenticated = await app.inject({
@@ -1191,10 +1029,10 @@ test("listing creation requires an active, verified student session", async (t) 
     });
   }
 
-  await t.test("approved non-student account cannot create a listing", async () => {
+  await t.test("active email-verified account can sell regardless of role", async () => {
     const actor = await createActor({
       role: Role.ADMINISTRATOR,
-      verificationStatus: VerificationStatus.APPROVED,
+      hasProfile: false,
     });
     const response = await app.inject({
       method: "POST",
@@ -1202,36 +1040,45 @@ test("listing creation requires an active, verified student session", async (t) 
       headers: authHeaders(actor.sessionToken),
       payload,
     });
-    assert.equal(response.statusCode, 403);
-    assert.equal(response.json().error.code, "SELLER_VERIFICATION_REQUIRED");
-  });
-
-  await t.test("concurrent retries resume one existing draft instead of duplicating it", async () => {
-    const actor = await createActor({ verificationStatus: VerificationStatus.APPROVED });
-    const creationKey = randomUUID();
-    const headers = { ...authHeaders(actor.sessionToken), "Idempotency-Key": creationKey };
-    const [first, retry] = await Promise.all([
-      app.inject({ method: "POST", url: "/api/v1/listings", headers, payload }),
-      app.inject({ method: "POST", url: "/api/v1/listings", headers, payload }),
-    ]);
-    assert.equal(first.statusCode, 201);
-    assert.equal(retry.statusCode, 201);
-    assert.equal(first.json().listing.id, retry.json().listing.id);
-
-    const changedRetry = await app.inject({
+    assert.equal(response.statusCode, 201, JSON.stringify(response.json()));
+    const listingId = response.json().listing.id as string;
+    await createReadyListingImage(listingId);
+    const publish = await app.inject({
       method: "POST",
-      url: "/api/v1/listings",
-      headers,
-      payload: { ...payload, title: "Recovered draft title" },
+      url: `/api/v1/listings/${listingId}/publish`,
+      headers: authHeaders(actor.sessionToken),
     });
-    assert.equal(changedRetry.statusCode, 409);
-    assert.equal(changedRetry.json().error.code, "LISTING_CREATION_RETRY_MISMATCH");
-    assert.equal(
-      await prisma.listing.count({ where: { sellerId: actor.user.id, creationKey } }),
-      1,
-    );
-    assert.equal("creationKey" in first.json().listing, false);
+    assert.equal(publish.statusCode, 200, JSON.stringify(publish.json()));
+    assert.equal(publish.json().listing.status, ListingStatus.PUBLISHED);
+
+    const verificationState = await app.inject({
+      method: "GET",
+      url: "/api/v1/verification/me",
+      headers: authHeaders(actor.sessionToken),
+    });
+    assert.equal(verificationState.json().maySell, true);
   });
+});
+
+test("draft creation retries are idempotent and reject changed payloads", async () => {
+  const actor = await createActor({ verificationStatus: VerificationStatus.PENDING });
+  const creationKey = randomUUID();
+  const headers = { ...authHeaders(actor.sessionToken), "Idempotency-Key": creationKey };
+  const payload = createListingPayload();
+  const [first, retry] = await Promise.all([
+    app.inject({ method: "POST", url: "/api/v1/listings", headers, payload }),
+    app.inject({ method: "POST", url: "/api/v1/listings", headers, payload }),
+  ]);
+  assert.equal(first.statusCode, 201);
+  assert.equal(retry.statusCode, 201);
+  assert.equal(first.json().listing.id, retry.json().listing.id);
+  const changedRetry = await app.inject({
+    method: "POST", url: "/api/v1/listings", headers, payload: { ...payload, title: "Changed retry" },
+  });
+  assert.equal(changedRetry.statusCode, 409);
+  assert.equal(changedRetry.json().error.code, "LISTING_CREATION_RETRY_MISMATCH");
+  assert.equal(await prisma.listing.count({ where: { sellerId: actor.user.id, creationKey } }), 1);
+  assert.equal("creationKey" in first.json().listing, false);
 });
 
 test("listing creation rejects malformed fields and client-supplied ownership", async () => {
@@ -1256,7 +1103,7 @@ test("listing creation rejects malformed fields and client-supplied ownership", 
 });
 
 test("client-supplied seller or verification claims cannot bypass authorization", async () => {
-  const actor = await createActor({ hasProfile: false });
+  const actor = await createActor({ hasProfile: false, emailVerified: false });
   const fakeClaims = {
     verified: true,
     isSeller: true,
@@ -1279,10 +1126,10 @@ test("client-supplied seller or verification claims cannot bypass authorization"
     payload: fakeClaims,
   });
   assert.equal(publish.statusCode, 403);
-  assert.equal(publish.json().error.code, "SELLER_VERIFICATION_REQUIRED");
+  assert.equal(publish.json().error.code, "SELLER_EMAIL_UNVERIFIED");
 });
 
-test("manual verification reviews require moderator/admin authorization and forbid self-review", async () => {
+test("manual verification reviews require moderator/admin authorization and forbid self-review", async (t) => {
   const student = await createActor({ verificationStatus: VerificationStatus.PENDING });
   const studentReview = await app.inject({
     method: "POST",

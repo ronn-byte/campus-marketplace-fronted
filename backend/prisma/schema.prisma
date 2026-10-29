@@ -37,6 +37,7 @@ model Profile {
   userId      String   @unique @db.Uuid
   nickname    String?  @db.VarChar(60)
   phoneNumber String?  @db.VarChar(25)
+  whatsappNumber String? @db.VarChar(25)
   yearOfStudy Int?
   course      String?  @db.VarChar(120)
   bio         String?  @db.VarChar(500)

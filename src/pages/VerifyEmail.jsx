@@ -40,7 +40,7 @@ export default function VerifyEmail() {
           return {
             status: "success",
             message: isUniversityVerification
-              ? "Your MUT student email is verified. Student verification is approved."
+              ? "Your MUT student email is verified for student status. Confirm your account email separately in Settings before selling."
               : "Your email has been verified successfully.",
           };
         } catch (error) {

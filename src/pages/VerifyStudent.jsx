@@ -48,7 +48,7 @@ export default function VerifyStudent() {
       <div className="page-shell">
         <section className="form-card verification-workflow">
           <h1>Sign in to verify your student account</h1>
-          <p className="muted">Student verification is optional for browsing and buying, and is needed when you want to sell.</p>
+          <p className="muted">Student verification is available as a trust feature. Confirm your account email to sell; student approval is not currently required.</p>
           <Link to="/login" className="button">Log in</Link>
         </section>
       </div>
@@ -98,7 +98,7 @@ export default function VerifyStudent() {
       <section className="form-card verification-workflow" aria-labelledby="verification-heading">
         <p className="eyebrow">Student verification</p>
         <h1 id="verification-heading">Verify your student account</h1>
-        <p className="muted">Verification is only needed when you're ready to create listings and sell. You can continue browsing, buying, and contacting sellers without it.</p>
+        <p className="muted">Student verification remains available as a trust feature. Email confirmation is currently required to sell, while student approval is optional.</p>
 
         {error && <div className="form-alert" role="alert">{error}</div>}
 
@@ -110,7 +110,7 @@ export default function VerifyStudent() {
         ) : status === "APPROVED" ? (
           <div className="verification-notice verification-notice--approved">
             <h2>Verified student</h2>
-            <p>Your student verification is complete. You can create listings and sell on MUT Market.</p>
+            <p>Your student verification is complete. Email confirmation is still required before selling.</p>
           </div>
         ) : status === "PENDING" ? (
           <div className="verification-notice">

@@ -1,4 +1,6 @@
 import { prisma } from "../../lib/prisma.js";
+import { AccountStatus, Role } from "@prisma/client";
+import { AppError } from "../../app/errors.js";
 
 export type ProfilePayload = {
   id: string;
@@ -6,6 +8,7 @@ export type ProfilePayload = {
   email: string;
   nickname: string | null;
   phoneNumber: string | null;
+  whatsappNumber: string | null;
   yearOfStudy: number | null;
   course: string | null;
   bio: string | null;
@@ -13,6 +16,12 @@ export type ProfilePayload = {
   createdAt: Date;
   updatedAt: Date;
 };
+
+export function isSellerProfileComplete(
+  profile: Pick<ProfilePayload, "nickname" | "course"> | null,
+): boolean {
+  return Boolean(profile?.nickname?.trim() && profile.course?.trim());
+}
 
 export async function getCurrentProfile(userId: string): Promise<ProfilePayload> {
   const user = await prisma.user.findUnique({
@@ -34,6 +43,7 @@ export async function getCurrentProfile(userId: string): Promise<ProfilePayload>
     email: user.email,
     nickname: profile?.nickname ?? null,
     phoneNumber: profile?.phoneNumber ?? null,
+    whatsappNumber: profile?.whatsappNumber ?? null,
     yearOfStudy: profile?.yearOfStudy ?? null,
     course: profile?.course ?? null,
     bio: profile?.bio ?? null,
@@ -44,7 +54,7 @@ export async function getCurrentProfile(userId: string): Promise<ProfilePayload>
 }
 
 export async function updateCurrentProfile(userId: string, input: Record<string, unknown>) {
-  const profile = await prisma.profile.upsert({
+  await prisma.profile.upsert({
     where: { userId },
     update: input,
     create: {
@@ -54,4 +64,27 @@ export async function updateCurrentProfile(userId: string, input: Record<string,
   });
 
   return getCurrentProfile(userId);
+}
+
+export async function getPublicSellerProfile(userId: string, includeContactDetails = false) {
+  const user = await prisma.user.findFirst({
+    where: {
+      id: userId,
+      role: Role.STUDENT,
+      accountStatus: AccountStatus.ACTIVE,
+      emailVerifiedAt: { not: null },
+    },
+    select: {
+      profile: { select: { nickname: true, phoneNumber: true, whatsappNumber: true, bio: true, avatarUrl: true } },
+      studentProfile: { select: { displayName: true } },
+    },
+  });
+  if (!user) throw new AppError(404, "SELLER_NOT_FOUND", "This seller profile is unavailable.");
+  return {
+    name: user.profile?.nickname || user.studentProfile?.displayName || "MUT Market seller",
+    avatarUrl: user.profile?.avatarUrl ?? null,
+    description: user.profile?.bio ?? null,
+    phoneNumber: includeContactDetails ? (user.profile?.phoneNumber ?? null) : null,
+    whatsappNumber: includeContactDetails ? (user.profile?.whatsappNumber ?? null) : null,
+  };
 }

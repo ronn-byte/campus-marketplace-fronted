@@ -43,6 +43,7 @@ test("profile API requires auth and supports safe profile updates", async () => 
       passwordHash: await hashPassword(password),
       role: Role.STUDENT,
       accountStatus: AccountStatus.ACTIVE,
+      emailVerifiedAt: new Date(),
     },
   });
 
@@ -79,6 +80,7 @@ test("profile API requires auth and supports safe profile updates", async () => 
     payload: {
       nickname: "Campus Alex",
       phoneNumber: "+254712345678",
+      whatsappNumber: "0712345678",
       yearOfStudy: 3,
       course: "Computer Science",
       bio: "Campus seller exploring the market.",
@@ -94,6 +96,7 @@ test("profile API requires auth and supports safe profile updates", async () => 
     payload: {
       nickname: "Campus Alex",
       phoneNumber: "+254712345678",
+      whatsappNumber: "0712345678",
       yearOfStudy: 3,
       course: "Computer Science",
       bio: "Campus seller exploring the market.",
@@ -103,7 +106,48 @@ test("profile API requires auth and supports safe profile updates", async () => 
   const response = validUpdate.json();
   assert.equal(response.profile.nickname, "Campus Alex");
   assert.equal(response.profile.phoneNumber, "+254712345678");
+  assert.equal(response.profile.whatsappNumber, "+254712345678");
   assert.equal(response.profile.course, "Computer Science");
+
+  const publicProfile = await app.inject({
+    method: "GET",
+    url: `/api/v1/sellers/${user.id}`,
+  });
+  assert.equal(publicProfile.statusCode, 200);
+  assert.deepEqual(publicProfile.json().profile, {
+    name: "Campus Alex",
+    avatarUrl: null,
+    description: "Campus seller exploring the market.",
+    phoneNumber: null,
+    whatsappNumber: null,
+  });
+  const anonymousProfileJson = JSON.stringify(publicProfile.json());
+  assert.equal(anonymousProfileJson.includes(email), false);
+  assert.equal(anonymousProfileJson.includes("+254712345678"), false);
+  assert.equal(anonymousProfileJson.includes("0712345678"), false);
+
+  const invalidSessionProfile = await app.inject({
+    method: "GET",
+    url: `/api/v1/sellers/${user.id}`,
+    headers: { cookie: `${env.SESSION_COOKIE_NAME}=invalid-session-token` },
+  });
+  assert.equal(invalidSessionProfile.statusCode, 200);
+  assert.deepEqual(invalidSessionProfile.json().profile, publicProfile.json().profile);
+
+  const authenticatedSellerProfile = await app.inject({
+    method: "GET",
+    url: `/api/v1/sellers/${user.id}`,
+    headers: { cookie },
+  });
+  assert.equal(authenticatedSellerProfile.statusCode, 200);
+  assert.deepEqual(authenticatedSellerProfile.json().profile, {
+    name: "Campus Alex",
+    avatarUrl: null,
+    description: "Campus seller exploring the market.",
+    phoneNumber: "+254712345678",
+    whatsappNumber: "+254712345678",
+  });
+  assert.equal(JSON.stringify(authenticatedSellerProfile.json()).includes(email), false);
 
   const persistedStudentProfile = await prisma.studentProfile.findUnique({
     where: { userId: user.id },
@@ -117,6 +161,7 @@ test("profile API requires auth and supports safe profile updates", async () => 
     headers: { cookie },
     payload: {
       phoneNumber: "invalid-phone",
+      whatsappNumber: "javascript:alert(1)",
       yearOfStudy: 18,
     },
   });

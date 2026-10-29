@@ -188,6 +188,7 @@ export default function PostItem() {
     message: "",
     error: "",
   });
+  const [profileIncomplete, setProfileIncomplete] = useState(false);
   const [operationLabel, setOperationLabel] = useState("");
   const [pendingImageId, setPendingImageId] = useState(null);
   const [uploadBatchConflict, setUploadBatchConflict] = useState(false);
@@ -400,6 +401,7 @@ export default function PostItem() {
     if (status.loading || loadingDraft || isAuthLoading) return;
 
     setStatus({ loading: true, message: "", error: "" });
+    setProfileIncomplete(false);
     const isPublishedEdit = pendingListing?.status === "PUBLISHED";
     const initialOperation = isPublishedEdit ? "Saving listing changes..." : "Saving your draft...";
     setOperationLabel(initialOperation);
@@ -549,6 +551,7 @@ export default function PostItem() {
     }
 
     publishInFlightRef.current = true;
+    setProfileIncomplete(false);
     setStatus({ loading: true, message: "", error: "" });
     setOperationLabel("Publishing listing…");
     setBlockingLabel("Publishing listing…");
@@ -582,6 +585,7 @@ export default function PostItem() {
       setOperationLabel("");
       setBlockingLabel("");
     } catch (error) {
+      setProfileIncomplete(error?.response?.data?.error?.code === "SELLER_PROFILE_INCOMPLETE");
       setStatus({
         loading: false,
         message: "",
@@ -605,6 +609,9 @@ export default function PostItem() {
     !uploadBatchIdRef.current &&
     !categoryError &&
     categories.length > 0;
+  const profileReturnPath = pendingListing?.id
+    ? `/post-item?edit=${encodeURIComponent(pendingListing.id)}`
+    : "/post-item";
 
   return (
     <div className="page-shell sell-layout">
@@ -623,6 +630,12 @@ export default function PostItem() {
             : "Clear details help another student decide quickly. Your listing status is controlled by the marketplace server."}
         </p>
 
+        {user && !user.emailVerifiedAt && (
+          <div className="form-alert" role="status">
+            Confirm your email before creating, editing, or publishing listings. <Link to="/settings">Open Settings to resend the confirmation email.</Link>
+          </div>
+        )}
+
         {loadingDraft && (
           <div className="preview-note" role="status">
             Loading your draft...
@@ -633,6 +646,14 @@ export default function PostItem() {
           <div className="form-alert" role="alert">
             {status.error}
           </div>
+        )}
+
+        {profileIncomplete && (
+          <p className="form-alert" role="alert">
+            <Link to={`/profile?returnTo=${encodeURIComponent(profileReturnPath)}`}>
+              Complete your seller profile, then return here to publish.
+            </Link>
+          </p>
         )}
 
         {uploadBatchConflict && (

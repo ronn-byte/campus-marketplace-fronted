@@ -15,6 +15,7 @@ import Navbar from "./components/Navbar.jsx";
 import { AuthProvider } from "./context/AuthContext.jsx";
 import { FeedbackProvider } from "./context/FeedbackContext.jsx";
 import ResetPassword from "./pages/ResetPassword";
+import SellerProfile from "./pages/SellerProfile.jsx";
 
 function App() {
   return (
@@ -31,6 +32,7 @@ function App() {
             <Route path="/forgot-password" element={<ForgotPassword />} />
 	    <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/listing/:id" element={<ListingDetails />} />
+            <Route path="/sellers/:sellerId" element={<SellerProfile />} />
             <Route path="/my-listings" element={<MyListings />} />
             <Route path="/my-inquiries" element={<MyInquiries />} />
             <Route path="/profile" element={<Profile />} />

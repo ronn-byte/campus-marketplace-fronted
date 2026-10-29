@@ -25,13 +25,14 @@ let inactiveCategoryId: string;
 const actorIds: string[] = [];
 const listingIds: string[] = [];
 
-async function createSeller(verificationStatus: VerificationStatus) {
+async function createSeller(verificationStatus: VerificationStatus, emailVerified = true) {
   const user = await prisma.user.create({
     data: {
       email: `phase-a-search-${Date.now()}-${actorIds.length}@example.test`,
       passwordHash: "not-used-by-search-tests",
       role: Role.STUDENT,
       accountStatus: AccountStatus.ACTIVE,
+      emailVerifiedAt: emailVerified ? new Date() : null,
       studentProfile: { create: { displayName: "Search Test Seller", verificationStatus } },
     },
   });
@@ -79,7 +80,7 @@ before(async () => {
   ]);
   [categoryId, secondCategoryId, inactiveCategoryId] = categories.map(({ id }) => id);
   const seller = await createSeller(VerificationStatus.APPROVED);
-  const unverifiedSeller = await createSeller(VerificationStatus.PENDING);
+  const unverifiedSeller = await createSeller(VerificationStatus.PENDING, false);
   await Promise.all([
     addListing(seller.id, { title: "Green Physics Textbook", description: "First year mechanics notes", price: 100, condition: ListingCondition.GOOD, location: "North Campus" }),
     addListing(seller.id, { title: "Green Study Chair", description: "Clean chair", price: 200, condition: ListingCondition.USED, location: "South Campus", categoryId: secondCategoryId }),

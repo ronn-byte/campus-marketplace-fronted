@@ -1,4 +1,4 @@
-import { AccountStatus, EmailVerificationPurpose, Prisma, Role, VerificationMethod, VerificationStatus } from "@prisma/client";
+import { AccountStatus, EmailVerificationPurpose, Role, VerificationMethod, VerificationStatus } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 import { prisma } from "../../lib/prisma.js";
 import { createOpaqueToken, hashToken } from "../auth/auth.utils.js";
@@ -17,18 +17,10 @@ export type VerificationSubmissionInput = {
 };
 
 export async function getUserVerificationState(userId: string) {
-  const studentProfile = await prisma.studentProfile.findUnique({
-    where: { userId },
-    select: {
-      verificationStatus: true,
-      user: {
-        select: {
-          role: true,
-          accountStatus: true,
-        },
-      },
-    },
-  });
+  const [studentProfile, user] = await Promise.all([
+    prisma.studentProfile.findUnique({ where: { userId }, select: { verificationStatus: true } }),
+    prisma.user.findUnique({ where: { id: userId }, select: { role: true, accountStatus: true, emailVerifiedAt: true } }),
+  ]);
 
   const mostRecentVerification = await prisma.verification.findFirst({
     where: { userId },
@@ -45,10 +37,7 @@ export async function getUserVerificationState(userId: string) {
     ? VerificationStatus.APPROVED
     : null);
   const maySell = Boolean(
-    studentProfile &&
-    studentProfile.user.role === Role.STUDENT &&
-    studentProfile.user.accountStatus === AccountStatus.ACTIVE &&
-    studentProfile.verificationStatus === VerificationStatus.APPROVED,
+    user?.accountStatus === AccountStatus.ACTIVE && user.emailVerifiedAt,
   );
 
   return {
@@ -60,26 +49,32 @@ export async function getUserVerificationState(userId: string) {
 }
 
 export async function assertSellerAuthorized(userId: string): Promise<void> {
-  const profile = await prisma.studentProfile.findUnique({
-    where: { userId },
-    select: {
-      verificationStatus: true,
-      user: {
-        select: { role: true, accountStatus: true },
-      },
-    },
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { accountStatus: true, emailVerifiedAt: true },
   });
 
-  if (
-    !profile ||
-    profile.user.role !== Role.STUDENT ||
-    profile.user.accountStatus !== AccountStatus.ACTIVE
-  ) {
-    throw new AppError(403, "SELLER_VERIFICATION_REQUIRED", "Student verification is required before you can sell.");
+  if (!user || user.accountStatus !== AccountStatus.ACTIVE) {
+    throw new AppError(403, "SELLER_NOT_ELIGIBLE", "Your account is not eligible to sell.");
   }
 
-  if (profile.verificationStatus !== VerificationStatus.APPROVED) {
-    throw new AppError(403, "SELLER_VERIFICATION_REQUIRED", "Student verification is required before you can sell.");
+  if (!user.emailVerifiedAt) {
+    throw new AppError(403, "SELLER_EMAIL_UNVERIFIED", "Confirm your email address before creating or managing listings.");
+  }
+}
+
+export async function assertBuyerAuthorized(userId: string): Promise<void> {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { accountStatus: true, emailVerifiedAt: true },
+  });
+
+  if (!user || user.accountStatus !== AccountStatus.ACTIVE) {
+    throw new AppError(403, "BUYER_NOT_ELIGIBLE", "Your account is not eligible for protected buyer actions.");
+  }
+
+  if (!user.emailVerifiedAt) {
+    throw new AppError(403, "EMAIL_VERIFICATION_REQUIRED", "Confirm your email before using protected buyer actions.");
   }
 }
 

@@ -3,6 +3,7 @@ import test, { after, before } from "node:test";
 import {
   AccountStatus,
   ListingStatus,
+  Role,
   VerificationStatus,
 } from "@prisma/client";
 
@@ -23,8 +24,10 @@ const { createOpaqueToken, hashPassword, hashToken } = await import("../src/modu
 const app = buildApp();
 
 type ActorOptions = {
+  role?: Role;
   accountStatus?: AccountStatus;
   verificationStatus?: VerificationStatus;
+  emailVerified?: boolean;
 };
 
 const actorIds: string[] = [];
@@ -38,7 +41,9 @@ async function createActor(options: ActorOptions = {}) {
     data: {
       email,
       passwordHash: await hashPassword("phase2-inquiry-test-password"),
+      role: options.role ?? Role.STUDENT,
       accountStatus: options.accountStatus ?? AccountStatus.ACTIVE,
+      emailVerifiedAt: options.emailVerified === false ? null : new Date(),
       studentProfile: {
         create: {
           displayName: "Inquiry Test Student",
@@ -128,7 +133,9 @@ test("listing inquiry creation enforces authentication and session identity", as
   const seller = await createActor({
     verificationStatus: VerificationStatus.APPROVED,
   });
-  const unverifiedBuyer = await createActor();
+  const pendingBuyer = await createActor();
+  const administratorBuyer = await createActor({ role: Role.ADMINISTRATOR });
+  const unconfirmedBuyer = await createActor({ emailVerified: false });
   const verifiedBuyer = await createActor({
     verificationStatus: VerificationStatus.APPROVED,
   });
@@ -159,11 +166,11 @@ test("listing inquiry creation enforces authentication and session identity", as
     );
   });
 
-  await t.test("authenticated unverified student can create an inquiry", async () => {
+  await t.test("an email-verified buyer without student verification can create an inquiry", async () => {
     const response = await app.inject({
       method: "POST",
       url,
-      headers: authHeaders(unverifiedBuyer.sessionToken),
+      headers: authHeaders(pendingBuyer.sessionToken),
       payload: { message: "  Is this still available?  " },
     });
     assert.equal(response.statusCode, 201);
@@ -172,7 +179,32 @@ test("listing inquiry creation enforces authentication and session identity", as
     const saved = await prisma.listingInquiry.findFirst({
       where: { listingId: listing.id },
     });
-    assert.equal(saved?.buyerId, unverifiedBuyer.user.id);
+    assert.equal(saved?.buyerId, pendingBuyer.user.id);
+  });
+
+  await t.test("an active email-verified account can inquire regardless of role", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url,
+      headers: authHeaders(administratorBuyer.sessionToken),
+      payload: { message: "Can I arrange a viewing?" },
+    });
+    assert.equal(response.statusCode, 201);
+    const saved = await prisma.listingInquiry.findFirst({
+      where: { listingId: listing.id, buyerId: administratorBuyer.user.id },
+    });
+    assert.ok(saved);
+  });
+
+  await t.test("an unverified email cannot create an inquiry", async () => {
+    const response = await app.inject({
+      method: "POST",
+      url,
+      headers: authHeaders(unconfirmedBuyer.sessionToken),
+      payload: { message: "I am interested." },
+    });
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.json().error.code, "EMAIL_VERIFICATION_REQUIRED");
   });
 
   await t.test("a different eligible buyer can create an inquiry", async () => {
@@ -194,13 +226,13 @@ test("listing inquiry creation enforces authentication and session identity", as
     const response = await app.inject({
       method: "POST",
       url,
-      headers: authHeaders(unverifiedBuyer.sessionToken),
+      headers: authHeaders(pendingBuyer.sessionToken),
       payload: { message: "Following up." },
     });
     assert.equal(response.statusCode, 201);
     assert.equal(
       await prisma.listingInquiry.count({
-        where: { listingId: listing.id, buyerId: unverifiedBuyer.user.id },
+        where: { listingId: listing.id, buyerId: pendingBuyer.user.id },
       }),
       2,
     );
@@ -213,7 +245,7 @@ test("listing inquiry creation enforces authentication and session identity", as
     const response = await app.inject({
       method: "POST",
       url,
-      headers: authHeaders(unverifiedBuyer.sessionToken),
+      headers: authHeaders(pendingBuyer.sessionToken),
       payload: { message: "Hello", buyerId: verifiedBuyer.user.id },
     });
     assert.equal(response.statusCode, 422);
@@ -233,7 +265,7 @@ test("listing inquiry creation enforces authentication and session identity", as
       const response = await app.inject({
         method: "POST",
         url,
-        headers: authHeaders(unverifiedBuyer.sessionToken),
+        headers: authHeaders(pendingBuyer.sessionToken),
         payload,
       });
       assert.equal(response.statusCode, 422);
@@ -251,7 +283,7 @@ test("listing inquiry creation enforces authentication and session identity", as
       const response = await app.inject({
         method: "POST",
         url,
-        headers: authHeaders(unverifiedBuyer.sessionToken),
+        headers: authHeaders(pendingBuyer.sessionToken),
         payload,
       });
       assert.equal(response.statusCode, 422);
@@ -410,6 +442,8 @@ test("listing inquiry retrieval is authenticated, owner-only, and returns safe b
     });
     assert.equal(response.statusCode, 200);
     assert.deepEqual(Object.keys(response.json().listing.seller).sort(), [
+      "avatarUrl",
+      "id",
       "name",
       "verified",
     ]);
@@ -421,6 +455,8 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
   const sellerB = await createActor({ verificationStatus: VerificationStatus.APPROVED });
   const buyerA = await createActor({ verificationStatus: VerificationStatus.APPROVED });
   const buyerB = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const administratorBuyer = await createActor({ role: Role.ADMINISTRATOR });
+  const unconfirmedBuyer = await createActor({ emailVerified: false });
 
   await createListing(sellerA.user.id, ListingStatus.DRAFT);
   const published = await createListing(sellerA.user.id, ListingStatus.PUBLISHED);
@@ -444,6 +480,15 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
       buyerId: buyerA.user.id,
       message: "Historical inquiry after sale.",
       status: "CLOSED",
+    },
+  });
+
+  await prisma.listingInquiry.create({
+    data: {
+      listingId: published.id,
+      buyerId: administratorBuyer.user.id,
+      message: "Administrator-role buyer inquiry.",
+      status: "OPEN",
     },
   });
 
@@ -475,6 +520,14 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
     const unauthenticated = await app.inject({ method: "GET", url: "/api/v1/inquiries/me" });
     assert.equal(unauthenticated.statusCode, 401);
 
+    const unverifiedEmail = await app.inject({
+      method: "GET",
+      url: "/api/v1/inquiries/me",
+      headers: authHeaders(unconfirmedBuyer.sessionToken),
+    });
+    assert.equal(unverifiedEmail.statusCode, 403);
+    assert.equal(unverifiedEmail.json().error.code, "EMAIL_VERIFICATION_REQUIRED");
+
     const ownInquiries = await app.inject({
       method: "GET",
       url: "/api/v1/inquiries/me?page=1&pageSize=10",
@@ -499,6 +552,14 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
     });
     assert.equal(response.statusCode, 200);
     assert.equal(response.json().inquiries.length, 0);
+
+    const otherRoleInquiries = await app.inject({
+      method: "GET",
+      url: "/api/v1/inquiries/me",
+      headers: authHeaders(administratorBuyer.sessionToken),
+    });
+    assert.equal(otherRoleInquiries.statusCode, 200);
+    assert.equal(otherRoleInquiries.json().inquiries.length, 1);
   });
 });
 

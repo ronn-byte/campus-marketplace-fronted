@@ -7,12 +7,13 @@ import {
   ListingCondition,
   ListingInquiryStatus,
   ListingStatus,
-  Role,
   VerificationStatus,
 } from "@prisma/client";
 import { Prisma } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 import { prisma } from "../../lib/prisma.js";
+import { assertBuyerAuthorized } from "../verification/verification.service.js";
+import { isSellerProfileComplete } from "../profile/profile.service.js";
 import {
   MAX_PUBLIC_LISTING_OFFSET,
   MAX_PUBLIC_LISTING_PAGE,
@@ -68,9 +69,8 @@ const eligiblePublishedListingWhere = {
   category: { is: { isActive: true } },
   seller: {
     is: {
-      role: Role.STUDENT,
       accountStatus: AccountStatus.ACTIVE,
-      studentProfile: { is: { verificationStatus: VerificationStatus.APPROVED } },
+      emailVerifiedAt: { not: null },
     },
   },
 } satisfies Prisma.ListingWhereInput;
@@ -601,6 +601,19 @@ export async function publishListing(input: PublishListingInput) {
       );
     }
 
+    const sellerProfile = await transaction.profile.findUnique({
+      where: { userId: input.sellerId },
+      select: { nickname: true, course: true },
+    });
+
+    if (!isSellerProfileComplete(sellerProfile)) {
+      throw new AppError(
+        422,
+        "SELLER_PROFILE_INCOMPLETE",
+        "Complete your seller profile with a nickname and course before publishing.",
+      );
+    }
+
     const readyImageCount = await transaction.listingImage.count({
       where: {
         listingId: listing.id,
@@ -837,6 +850,7 @@ export async function getPublishedListings(
       take: input.pageSize,
       select: {
         id: true,
+        sellerId: true,
         title: true,
         description: true,
         price: true,
@@ -863,8 +877,10 @@ export async function getPublishedListings(
         },
         seller: {
           select: {
+            profile: { select: { nickname: true, avatarUrl: true } },
             studentProfile: {
               select: {
+                displayName: true,
                 verificationStatus: true,
               },
             },
@@ -882,7 +898,9 @@ export async function getPublishedListings(
       ...listing,
       images: withImageUrls(listing.images),
       seller: {
-        name: "MUT student",
+        id: listing.sellerId,
+        name: listing.seller.profile?.nickname ?? listing.seller.studentProfile?.displayName ?? "MUT Market seller",
+        avatarUrl: listing.seller.profile?.avatarUrl ?? null,
         verified:
           listing.seller.studentProfile?.verificationStatus === VerificationStatus.APPROVED,
       },
@@ -931,6 +949,7 @@ export async function getPublicListing(listingId: string, viewerId?: string) {
       },
       seller: {
         select: {
+          profile: { select: { nickname: true, avatarUrl: true } },
           studentProfile: {
             select: {
               displayName: true,
@@ -952,6 +971,7 @@ export async function getPublicListing(listingId: string, viewerId?: string) {
 
   return {
     id: listing.id,
+    sellerId: listing.sellerId,
     title: listing.title,
     description: listing.description,
     price: listing.price,
@@ -963,7 +983,9 @@ export async function getPublicListing(listingId: string, viewerId?: string) {
     category: listing.category,
     images: withImageUrls(listing.images),
     seller: {
-      name: listing.seller.studentProfile?.displayName ?? "MUT student",
+      id: listing.sellerId,
+      name: listing.seller.profile?.nickname ?? listing.seller.studentProfile?.displayName ?? "MUT Market seller",
+      avatarUrl: listing.seller.profile?.avatarUrl ?? null,
       verified:
         listing.seller.studentProfile?.verificationStatus === "APPROVED",
     },
@@ -975,6 +997,7 @@ export async function getSellerListings(
   sellerId: string,
   input: ListPublishedListingsInput,
 ) {
+  await assertSellerAuthorized(sellerId);
   const skip = (input.page - 1) * input.pageSize;
 
   const [listings, total] = await prisma.$transaction([
@@ -1032,6 +1055,7 @@ export async function getBuyerInquiries(
   buyerId: string,
   input: ListPublishedListingsInput,
 ) {
+  await assertBuyerAuthorized(buyerId);
   const skip = (input.page - 1) * input.pageSize;
 
   const [inquiries, total] = await prisma.$transaction([
@@ -1088,6 +1112,7 @@ export async function createListingInquiry(
   buyerId: string,
   message: string,
 ) {
+  await assertBuyerAuthorized(buyerId);
   const listing = await prisma.listing.findFirst({
     where: {
       id: listingId,
@@ -1130,6 +1155,7 @@ export async function getListingInquiries(
   listingId: string,
   sellerId: string,
 ) {
+  await assertSellerAuthorized(sellerId);
   const listing = await prisma.listing.findUnique({
     where: { id: listingId },
     select: { id: true, sellerId: true },

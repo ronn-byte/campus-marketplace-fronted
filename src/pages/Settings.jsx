@@ -140,10 +140,10 @@ export default function Settings() {
               </div>
               <p className="muted">
                 {studentStatus === "APPROVED"
-                  ? "Your verified student account can create listings and sell on MUT Market."
+                  ? "Student verification is approved. Confirmed email and active account status currently enable selling."
                   : studentStatus === "PENDING"
-                    ? "Your request is being reviewed. You can continue browsing and buying while you wait."
-                    : "Verification is optional for browsing and buying, and is required when you want to sell."}
+                    ? "Your request is being reviewed. You can sell after confirming your email while it is pending."
+                    : "Student verification remains available for future trust features. Confirmed email is required to sell."}
               </p>
               {studentStatus !== "APPROVED" && studentStatus !== "PENDING" && (
                 <Link to="/verify-student" className="button">

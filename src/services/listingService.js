@@ -61,8 +61,10 @@ export async function getListings(params = {}) {
           : listing.category?.name || "General",
         imageUrl,
         seller: {
+          id: listing.seller?.id,
           name: listing.seller?.name || "MUT student",
           verified: listing.seller?.verified === true,
+          avatarUrl: listing.seller?.avatarUrl || null,
         },
         condition: listing.condition || null,
         location: listing.location || null,
@@ -91,8 +93,10 @@ export async function getListingById(id) {
     imageUrl,
     isOwner: Boolean(listing.isOwner),
     seller: {
+      id: listing.seller?.id,
       name: listing.seller?.name || "MUT student",
       verified: Boolean(listing.seller?.verified),
+      avatarUrl: listing.seller?.avatarUrl || null,
     },
     price: Number(listing.price ?? 0),
   };

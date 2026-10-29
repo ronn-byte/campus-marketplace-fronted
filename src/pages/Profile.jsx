@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import Button from "../components/Button";
 import { useAuth } from "../hooks/useAuth";
 import apiClient, { getApiErrorMessage } from "../services/apiClient";
@@ -7,6 +7,7 @@ import apiClient, { getApiErrorMessage } from "../services/apiClient";
 const emptyForm = {
   nickname: "",
   phoneNumber: "",
+  whatsappNumber: "",
   yearOfStudy: "",
   course: "",
   bio: "",
@@ -14,7 +15,12 @@ const emptyForm = {
 
 export default function Profile() {
   const { user, isLoading: authLoading } = useAuth();
+  const [searchParams] = useSearchParams();
   const userId = user?.id;
+  const returnTo = (() => {
+    const value = searchParams.get("returnTo");
+    return value && value.startsWith("/") && !value.startsWith("//") ? value : null;
+  })();
   const [form, setForm] = useState(emptyForm);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
@@ -57,6 +63,7 @@ export default function Profile() {
         setForm({
           nickname: data.profile?.nickname ?? "",
           phoneNumber: data.profile?.phoneNumber ?? "",
+          whatsappNumber: data.profile?.whatsappNumber ?? "",
           yearOfStudy: data.profile?.yearOfStudy ?? "",
           course: data.profile?.course ?? "",
           bio: data.profile?.bio ?? "",
@@ -135,17 +142,19 @@ export default function Profile() {
 
     try {
       const payload = {
-        nickname: form.nickname.trim() || undefined,
-        phoneNumber: form.phoneNumber.trim() || undefined,
+        nickname: form.nickname.trim() || null,
+        phoneNumber: form.phoneNumber.trim() || null,
+        whatsappNumber: form.whatsappNumber.trim() || null,
         yearOfStudy: form.yearOfStudy === "" ? undefined : Number(form.yearOfStudy),
-        course: form.course.trim() || undefined,
-        bio: form.bio.trim() || undefined,
+        course: form.course.trim() || null,
+        bio: form.bio.trim() || null,
       };
 
       const { data } = await apiClient.patch("/profile", payload);
       setForm({
         nickname: data.profile?.nickname ?? "",
         phoneNumber: data.profile?.phoneNumber ?? "",
+        whatsappNumber: data.profile?.whatsappNumber ?? "",
         yearOfStudy: data.profile?.yearOfStudy ?? "",
         course: data.profile?.course ?? "",
         bio: data.profile?.bio ?? "",
@@ -182,23 +191,23 @@ export default function Profile() {
             ) : verification?.status === "APPROVED" ? (
               <>
                 <h2 id="student-verification-heading"><span className="verification-card__icon" aria-hidden="true">✓</span> Verified student</h2>
-                <p>Your student verification lets you create listings and sell on MUT Market.</p>
+                <p>Your student verification is approved. Email confirmation and active account status currently determine selling eligibility.</p>
               </>
             ) : verification?.status === "PENDING" ? (
               <>
                 <h2 id="student-verification-heading">Verification pending</h2>
-                <p>Your student verification is being reviewed. No need to submit another request while it is pending. You can keep browsing and buying in the meantime.</p>
+                <p>Your request is being reviewed. You can sell after confirming your email while your student verification remains pending.</p>
               </>
             ) : verification?.status === "REJECTED" ? (
               <>
                 <h2 id="student-verification-heading">Verification needs attention</h2>
-                <p>You can review your details and submit a new request where supported. Browsing and buying are still available.</p>
+                <p>Student verification can be reviewed separately. You can sell after confirming your email while this request needs attention.</p>
                 <Link to="/verify-student" className="button">Continue verification</Link>
               </>
             ) : (
               <>
                 <h2 id="student-verification-heading">Verify your student account</h2>
-                <p>You're welcome here. When you're ready to sell, verification helps keep MUT Market trusted and allows you to create listings and sell items.</p>
+                <p>Student verification remains available for future trust features. Confirm your email to create listings and sell.</p>
                 <Link to="/verify-student" className="button">Verify student account</Link>
               </>
             )}
@@ -210,6 +219,7 @@ export default function Profile() {
             <div>
               <p className="eyebrow">Profile</p>
               <h2>Public details</h2>
+              <p className="muted">Phone, WhatsApp, and bio are optional. Any contact details you add here are shown on your public seller profile.</p>
             </div>
           </div>
 
@@ -219,13 +229,19 @@ export default function Profile() {
           <form onSubmit={handleSubmit} className="profile-form">
             <div className="field">
               <label htmlFor="nickname">Nickname</label>
-              <input id="nickname" name="nickname" value={form.nickname} onChange={handleChange} maxLength={60} placeholder="How would you like to be known?" />
+              <input id="nickname" name="nickname" value={form.nickname} onChange={handleChange} maxLength={60} placeholder="How would you like to be known?" required />
             </div>
 
             <div className="field-grid">
               <div className="field">
                 <label htmlFor="phoneNumber">Phone number</label>
                 <input id="phoneNumber" name="phoneNumber" value={form.phoneNumber} onChange={handleChange} maxLength={25} placeholder="+254700000000" />
+              </div>
+
+              <div className="field">
+                <label htmlFor="whatsappNumber">WhatsApp number</label>
+                <input id="whatsappNumber" name="whatsappNumber" value={form.whatsappNumber} onChange={handleChange} maxLength={25} placeholder="+254700000000" />
+                <small>Buyers can use this number to contact you through WhatsApp.</small>
               </div>
 
               <div className="field">
@@ -236,7 +252,7 @@ export default function Profile() {
 
             <div className="field">
               <label htmlFor="course">Course or program</label>
-              <input id="course" name="course" value={form.course} onChange={handleChange} maxLength={120} placeholder="Computer Science" />
+              <input id="course" name="course" value={form.course} onChange={handleChange} maxLength={120} placeholder="Computer Science" required />
             </div>
 
             <div className="field">
@@ -246,6 +262,7 @@ export default function Profile() {
 
             <div className="profile-actions">
               <Button type="submit" disabled={saving}>{saving ? "Saving..." : "Save profile"}</Button>
+              {returnTo && <Link className="text-link" to={returnTo}>Return to publishing</Link>}
             </div>
           </form>
         </section>
