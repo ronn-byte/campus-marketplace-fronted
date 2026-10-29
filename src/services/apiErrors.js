@@ -9,6 +9,7 @@ const safeCodeMessages = {
   AUTH_RATE_LIMITED: "Too many attempts were made. Wait a little while, then try again.",
   VALIDATION_ERROR: "Please check the form fields and try again.",
   EMAIL_ALREADY_EXISTS: "An account already uses this email. Log in or reset the password instead.",
+  REGISTRATION_CONFLICT: "Some submitted student details are already linked to an account. Check your details or log in to the existing account.",
   INVALID_STUDENT_EMAIL: "The registration number does not match the expected MUT student email. Check your details and try again.",
   INVALID_VERIFICATION_TOKEN: "This verification link is invalid or expired. Request a new link and try again.",
   INVALID_RESET_TOKEN: "This password reset link is invalid or expired. Request a new reset link and try again.",
@@ -64,6 +65,8 @@ export function classifyApiError(error, context = "request") {
   if (Object.prototype.hasOwnProperty.call(safeCodeMessages, code)) {
     const recovery = code === "EMAIL_ALREADY_EXISTS"
       ? { label: "Go to login", to: "/login" }
+      : code === "REGISTRATION_CONFLICT"
+        ? { label: "Go to login", to: "/login" }
       : code === "INVALID_RESET_TOKEN"
         ? { label: "Request a new reset link", to: "/forgot-password" }
         : code === "INVALID_VERIFICATION_TOKEN"

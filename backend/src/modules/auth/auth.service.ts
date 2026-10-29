@@ -207,19 +207,54 @@ export async function authenticate(
     throw GENERIC_AUTH_ERROR;
   }
 
-  if (user.accountStatus !== AccountStatus.ACTIVE) {
+  if (
+    user.accountStatus === AccountStatus.SUSPENDED ||
+    user.accountStatus === AccountStatus.DISABLED
+  ) {
     throw GENERIC_AUTH_ERROR;
   }
 
-  await prisma.user.update({
-    where: { id: user.id },
-    data: { lastLoginAt: new Date() },
-  });
+  // PENDING_VERIFICATION is retained for accounts created by the legacy
+  // email-gated workflow. Successful password authentication is enough to
+  // reconcile that state under the current policy; suspended and disabled
+  // accounts are rejected above and are never activated here.
+  const authenticatedUser = await reconcileAccountForLogin(user.id);
 
   return {
-    user: toSafeUser(user),
+    user: toSafeUser(authenticatedUser),
     userId: user.id,
   };
+}
+
+export async function reconcileAccountForLogin(
+  userId: string,
+): Promise<AuthenticatedUser> {
+  const updated = await prisma.user.updateMany({
+    where: {
+      id: userId,
+      accountStatus: {
+        in: [AccountStatus.PENDING_VERIFICATION, AccountStatus.ACTIVE],
+      },
+    },
+    data: {
+      accountStatus: AccountStatus.ACTIVE,
+      lastLoginAt: new Date(),
+    },
+  });
+
+  if (updated.count !== 1) {
+    throw GENERIC_AUTH_ERROR;
+  }
+
+  const authenticatedUser = await prisma.user.findUnique({
+    where: { id: userId },
+  });
+
+  if (!authenticatedUser || authenticatedUser.accountStatus !== AccountStatus.ACTIVE) {
+    throw GENERIC_AUTH_ERROR;
+  }
+
+  return toSafeUser(authenticatedUser);
 }
 
 export async function createSession(
@@ -239,13 +274,26 @@ export async function createSession(
       : {}),
   };
 
-  await prisma.session.create({
-    data: {
-      userId,
-      sessionHash: tokenHash,
-      expiresAt: addHours(env.SESSION_TTL_HOURS),
-      ...metadataFields,
-    },
+  await prisma.$transaction(async (transaction) => {
+    const users = await transaction.$queryRaw<Array<{ accountStatus: AccountStatus }>>`
+      SELECT "accountStatus"
+      FROM "users"
+      WHERE "id" = ${userId}::uuid
+      FOR UPDATE
+    `;
+
+    if (users.length !== 1 || users[0]?.accountStatus !== AccountStatus.ACTIVE) {
+      throw GENERIC_AUTH_ERROR;
+    }
+
+    await transaction.session.create({
+      data: {
+        userId,
+        sessionHash: tokenHash,
+        expiresAt: addHours(env.SESSION_TTL_HOURS),
+        ...metadataFields,
+      },
+    });
   });
 }
 

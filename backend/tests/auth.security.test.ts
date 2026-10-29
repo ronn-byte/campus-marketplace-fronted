@@ -57,6 +57,7 @@ const {
   changePassword,
   requestPasswordReset,
   resetPassword,
+  reconcileAccountForLogin,
   verifyEmail,
 } = await import("../src/modules/auth/auth.service.js");
 const { assertSellerAuthorized } = await import("../src/modules/verification/verification.service.js");
@@ -184,16 +185,21 @@ test("duplicate registration email returns a conflict without creating another a
       registrationNumber: undefined,
     });
 
-    await assert.rejects(
-      () => register({
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/register",
+      payload: {
         email,
         password: "another-test-password-12345",
         displayName: "Duplicate User",
-        verificationMethod: undefined,
-        registrationNumber: undefined,
-      }),
-      (error: unknown) => error instanceof AppError && error.code === "EMAIL_ALREADY_EXISTS",
-    );
+      },
+    });
+
+    assert.equal(response.statusCode, 409);
+    assert.deepEqual(response.json().error, {
+      code: "EMAIL_ALREADY_EXISTS",
+      message: "An account with this email already exists. Please log in or reset your password.",
+    });
 
     assert.equal(await prisma.user.count({ where: { email } }), 1);
   } finally {
@@ -352,42 +358,202 @@ test("Authentication: invalid credentials returns generic error", async (t) => {
     await cleanupTestUser(email);
   });
 
-  await t.test("disabled account returns generic error", async () => {
-    const email = "test-auth-disabled@example.com";
+  await t.test("legacy pending accounts are reconciled after valid login", async () => {
+    const email = "test-auth-legacy-pending@example.com";
     await cleanupTestUser(email);
 
-    await register({
+    const legacyUser = await register({
       email,
       password: "test-password-12345",
-      displayName: "Test User",
+      displayName: "Legacy User",
       verificationMethod: VerificationMethod.MANUAL_STUDENT,
-      registrationNumber: "ABC123DEF458",
+      registrationNumber: "LEGACY123456",
     });
-
-    // Set to DISABLED
+    const profileBefore = await prisma.studentProfile.findUnique({
+      where: { userId: legacyUser.id },
+      select: { id: true, verificationStatus: true, registrationNumberHash: true, registrationNumberCiphertext: true },
+    });
+    const verificationsBefore = await prisma.verification.findMany({
+      where: { user: { email } },
+      select: { id: true, studentProfileId: true, method: true, status: true, reason: true, createdAt: true },
+    });
     await prisma.user.update({
       where: { email },
-      data: { accountStatus: AccountStatus.DISABLED },
+      data: { accountStatus: AccountStatus.PENDING_VERIFICATION },
     });
 
     try {
-      await authenticate({
-        email,
-        identifier: undefined,
-        password: "test-password-12345",
+      const login = await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/login",
+        payload: {
+          email,
+          password: "test-password-12345",
+        },
       });
-      assert.fail("Should have thrown INVALID_CREDENTIALS");
-    } catch (error) {
-      if (error instanceof AppError) {
-        assert.equal(error.code, "INVALID_CREDENTIALS");
-      } else {
-        throw error;
-      }
+
+      assert.equal(login.statusCode, 200);
+      assert.equal(login.json().user.accountStatus, AccountStatus.ACTIVE);
+      assert.equal(
+        (await prisma.user.findUnique({ where: { email } }))?.accountStatus,
+        AccountStatus.ACTIVE,
+      );
+
+      const setCookie = login.headers["set-cookie"];
+      const cookie = Array.isArray(setCookie) ? setCookie[0] : setCookie;
+      assert.ok(cookie);
+      const session = await app.inject({
+        method: "GET",
+        url: "/api/v1/auth/session",
+        headers: { cookie: cookie.split(";", 1)[0] },
+      });
+      assert.equal(session.statusCode, 200);
+      assert.equal(session.json().user.accountStatus, AccountStatus.ACTIVE);
+      assert.equal(session.json().user.email, email);
+
+      const profileAfter = await prisma.studentProfile.findUnique({
+        where: { userId: legacyUser.id },
+        select: { id: true, verificationStatus: true, registrationNumberHash: true, registrationNumberCiphertext: true },
+      });
+      const verificationsAfter = await prisma.verification.findMany({
+        where: { user: { email } },
+        select: { id: true, studentProfileId: true, method: true, status: true, reason: true, createdAt: true },
+      });
+      assert.deepEqual(profileAfter, profileBefore);
+      assert.deepEqual(verificationsAfter, verificationsBefore);
     } finally {
       await cleanupTestUser(email);
     }
   });
+
+  for (const accountStatus of [AccountStatus.SUSPENDED, AccountStatus.DISABLED]) {
+    await t.test(`${accountStatus} account returns generic error`, async () => {
+      const email = `test-auth-${accountStatus.toLowerCase()}@example.com`;
+      await cleanupTestUser(email);
+
+      await register({
+        email,
+        password: "test-password-12345",
+        displayName: "Test User",
+        verificationMethod: VerificationMethod.MANUAL_STUDENT,
+        registrationNumber: `ABC123${accountStatus === AccountStatus.SUSPENDED ? "458" : "459"}`,
+      });
+
+      await prisma.user.update({
+        where: { email },
+        data: { accountStatus },
+      });
+
+      try {
+        await authenticate({
+          email,
+          identifier: undefined,
+          password: "test-password-12345",
+        });
+        assert.fail("Should have thrown INVALID_CREDENTIALS");
+      } catch (error) {
+        if (error instanceof AppError) {
+          assert.equal(error.code, "INVALID_CREDENTIALS");
+        } else {
+          throw error;
+        }
+      } finally {
+        await cleanupTestUser(email);
+      }
+    });
+  }
 });
+
+for (const accountStatus of [AccountStatus.SUSPENDED, AccountStatus.DISABLED]) {
+  test(`concurrent ${accountStatus.toLowerCase()} cannot be overwritten by pending-account reconciliation`, async () => {
+    const email = `test-auth-race-${accountStatus.toLowerCase()}@example.com`;
+    await cleanupTestUser(email);
+
+    const user = await register({
+      email,
+      password: "test-password-12345",
+      displayName: "Race User",
+      verificationMethod: VerificationMethod.MANUAL_STUDENT,
+      registrationNumber: `RACE123${accountStatus === AccountStatus.SUSPENDED ? "458" : "459"}`,
+    });
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { accountStatus: AccountStatus.PENDING_VERIFICATION },
+    });
+
+    try {
+      const [reconciliation, moderation] = await Promise.allSettled([
+        reconcileAccountForLogin(user.id),
+        prisma.user.update({
+          where: { id: user.id },
+          data: { accountStatus },
+        }),
+      ]);
+
+      assert.equal(moderation.status, "fulfilled");
+      if (reconciliation.status === "rejected") {
+        assert.ok(reconciliation.reason instanceof AppError);
+        assert.equal(reconciliation.reason.code, "INVALID_CREDENTIALS");
+      }
+
+      assert.equal(
+        (await prisma.user.findUnique({ where: { id: user.id } }))?.accountStatus,
+        accountStatus,
+      );
+    } finally {
+      await cleanupTestUser(email);
+    }
+  });
+}
+
+for (const accountStatus of [AccountStatus.SUSPENDED, AccountStatus.DISABLED]) {
+  test(`session creation rejects a ${accountStatus.toLowerCase()} account after moderation locks its row`, async () => {
+    const email = `test-session-race-${accountStatus.toLowerCase()}@example.com`;
+    await cleanupTestUser(email);
+
+    const user = await register({
+      email,
+      password: "test-password-12345",
+      displayName: "Session Race User",
+      verificationMethod: VerificationMethod.MANUAL_STUDENT,
+      registrationNumber: `SESSION123${accountStatus === AccountStatus.SUSPENDED ? "458" : "459"}`,
+    });
+    const sessionToken = createOpaqueToken();
+    let releaseModerator: (() => void) | undefined;
+    const moderatorReady = new Promise<void>((resolve) => {
+      releaseModerator = resolve;
+    });
+
+    try {
+      const moderator = prisma.$transaction(async (transaction) => {
+        await transaction.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${user.id}::uuid FOR UPDATE`;
+        await transaction.user.update({
+          where: { id: user.id },
+          data: { accountStatus },
+        });
+        releaseModerator?.();
+        await moderatorReady;
+      });
+
+      await moderatorReady;
+      const sessionCreation = createSession(user.id, hashToken(sessionToken), {});
+      releaseModerator?.();
+
+      await assert.rejects(
+        sessionCreation,
+        (error: unknown) => error instanceof AppError && error.code === "INVALID_CREDENTIALS",
+      );
+      await moderator;
+      assert.equal(await getSessionUser(hashToken(sessionToken)), null);
+      assert.equal(
+        (await prisma.session.findUnique({ where: { sessionHash: hashToken(sessionToken) } })),
+        null,
+      );
+    } finally {
+      await cleanupTestUser(email);
+    }
+  });
+}
 
 test("Session: revoked session cannot be used", async () => {
   const email = "test-session-revoke@example.com";

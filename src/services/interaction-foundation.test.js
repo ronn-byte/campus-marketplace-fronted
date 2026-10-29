@@ -14,6 +14,17 @@ test("API error classification maps stable authentication and validation errors 
   assert.doesNotMatch(validation.message, /internal raw text/);
 });
 
+test("registration conflicts provide a safe login recovery action", () => {
+  const conflict = classifyApiError(
+    { response: { status: 409, data: { error: { code: "REGISTRATION_CONFLICT" } } } },
+    "register",
+  );
+
+  assert.equal(conflict.kind, "request");
+  assert.equal(conflict.actionTo, "/login");
+  assert.match(conflict.message, /already linked to an account/i);
+});
+
 test("API error classification distinguishes network, timeout, rate limit, upload, unavailable, and server errors", () => {
   assert.equal(classifyApiError({ isAxiosError: true, code: "ERR_NETWORK" }).kind, "network");
   assert.equal(classifyApiError({ isAxiosError: true, code: "ECONNABORTED" }).kind, "timeout");
