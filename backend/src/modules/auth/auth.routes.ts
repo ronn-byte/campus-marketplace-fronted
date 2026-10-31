@@ -58,8 +58,9 @@ export async function registerAuthRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.post("/auth/resend-verification", async (request, reply) => {
-    enforceAuthRateLimit(`resend:${request.ip}`);
+    enforceAuthRateLimit(`resend-ip:${request.ip}`, 5);
     const { email } = parse(forgotPasswordSchema, request.body);
+    enforceAuthRateLimit(`resend-email:${hashToken(email)}`, 3);
     await resendVerification(email);
     return reply.status(202).send({ message: "If the account is eligible, verification instructions will be sent shortly." });
   });

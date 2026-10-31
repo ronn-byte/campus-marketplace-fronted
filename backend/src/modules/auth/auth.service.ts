@@ -1,10 +1,8 @@
-import { sendPasswordResetEmail, sendUniversityVerificationEmail, sendVerificationEmail } from "../../lib/email.js";
+import { sendPasswordResetEmail, sendVerificationEmail } from "../../lib/email.js";
 import {
   AccountStatus,
   EmailVerificationPurpose,
   Prisma,
-  VerificationMethod,
-  VerificationStatus,
 } from "@prisma/client";
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../app/errors.js";
@@ -23,11 +21,6 @@ import type {
   RegisterInput,
   ResetPasswordInput,
 } from "./auth.schemas.js";
-import {
-  encryptRegistrationNumber,
-  expectedMutStudentEmail,
-  registrationNumberHash,
-} from "../verification/verification.utils.js";
 
 const GENERIC_AUTH_ERROR = new AppError(
   401,
@@ -38,16 +31,6 @@ const GENERIC_AUTH_ERROR = new AppError(
 export async function register(input: RegisterInput) {
   const passwordHash = await hashPassword(input.password);
   const rawToken = createOpaqueToken();
-  const registrationNumber = input.registrationNumber?.trim();
-  const isManualStudentVerification =
-    input.verificationMethod === VerificationMethod.MANUAL_STUDENT &&
-    Boolean(registrationNumber);
-  const isUniversityEmailVerification =
-    input.verificationMethod === VerificationMethod.UNIVERSITY_EMAIL &&
-    Boolean(registrationNumber);
-  const universityToken = isUniversityEmailVerification
-    ? createOpaqueToken()
-    : undefined;
 
   try {
     const user = await prisma.$transaction(async (transaction) => {
@@ -59,68 +42,9 @@ export async function register(input: RegisterInput) {
         },
       });
 
-      let studentProfile: { id: string } | undefined;
-
-      if (isManualStudentVerification && registrationNumber) {
-        studentProfile = await transaction.studentProfile.create({
-          data: {
-            userId: created.id,
-            displayName: input.displayName,
-            verificationStatus: VerificationStatus.PENDING,
-            registrationNumberHash: registrationNumberHash(registrationNumber),
-            registrationNumberCiphertext: encryptRegistrationNumber(registrationNumber),
-          },
-        });
-
-        await transaction.verification.create({
-          data: {
-            userId: created.id,
-            studentProfileId: studentProfile.id,
-            method: VerificationMethod.MANUAL_STUDENT,
-            status: VerificationStatus.PENDING,
-          },
-        });
-      } else if (isUniversityEmailVerification && registrationNumber) {
-        studentProfile = await transaction.studentProfile.create({
-          data: {
-            userId: created.id,
-            displayName: input.displayName,
-            verificationStatus: VerificationStatus.PENDING,
-            registrationNumberHash: registrationNumberHash(registrationNumber),
-            registrationNumberCiphertext: encryptRegistrationNumber(registrationNumber),
-          },
-        });
-
-        const verification = await transaction.verification.create({
-          data: {
-            userId: created.id,
-            studentProfileId: studentProfile.id,
-            method: VerificationMethod.UNIVERSITY_EMAIL,
-            status: VerificationStatus.PENDING,
-            universityEmail: expectedMutStudentEmail(registrationNumber),
-          },
-        });
-
-        if (universityToken) {
-          await transaction.emailVerificationToken.create({
-            data: {
-              userId: created.id,
-              purpose: EmailVerificationPurpose.UNIVERSITY_EMAIL,
-              verificationId: verification.id,
-              tokenHash: hashToken(universityToken),
-              expiresAt: addHours(env.EMAIL_VERIFICATION_TTL_HOURS),
-            },
-          });
-        }
-      } else {
-        studentProfile = await transaction.studentProfile.create({
-          data: {
-            userId: created.id,
-            displayName: input.displayName,
-            verificationStatus: VerificationStatus.PENDING,
-          },
-        });
-      }
+      await transaction.profile.create({
+        data: { userId: created.id, nickname: input.displayName },
+      });
 
       await transaction.emailVerificationToken.create({
         data: {
@@ -133,16 +57,8 @@ export async function register(input: RegisterInput) {
       return created;
     });
 
-    if (isUniversityEmailVerification && registrationNumber && universityToken) {
-      try {
-        await sendUniversityVerificationEmail(expectedMutStudentEmail(registrationNumber), universityToken);
-      } catch {
-        console.error("University verification email delivery failed; registration completed.");
-      }
-    }
-
-    // Email ownership verification is separate from student verification.
-    // Accounts remain usable while student verification is pending.
+    // Email delivery follows the committed account/token transaction. A
+    // provider failure must not imply that account creation was rolled back.
     try {
       await sendVerificationEmail(input.email, rawToken);
     } catch {
@@ -173,7 +89,7 @@ export async function register(input: RegisterInput) {
       throw new AppError(
         409,
         "REGISTRATION_CONFLICT",
-        "The submitted account or student verification information conflicts with an existing record.",
+        "The submitted account information conflicts with an existing record.",
       );
     }
 

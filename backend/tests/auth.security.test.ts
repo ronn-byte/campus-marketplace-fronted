@@ -46,7 +46,6 @@ after(() => {
 });
 
 const { prisma } = await import("../src/lib/prisma.js");
-const { env } = await import("../src/config/env.js");
 const { buildApp } = await import("../src/app/app.js");
 const {
   authenticate,
@@ -76,40 +75,7 @@ async function cleanupTestUser(email: string) {
   ]);
 }
 
-test("registration rolls back account creation when student encryption is unavailable", async () => {
-  const email = "test-registration-encryption-unavailable@example.com";
-  await cleanupTestUser(email);
-
-  const originalEncryptionKey = env.STUDENT_DATA_ENCRYPTION_KEY;
-  try {
-    env.STUDENT_DATA_ENCRYPTION_KEY = undefined;
-
-    await assert.rejects(
-      () => register({
-        email,
-        password: "test-password-12345",
-        displayName: "Test Student",
-        verificationMethod: VerificationMethod.MANUAL_STUDENT,
-        registrationNumber: "ROLLBACK123456",
-      }),
-      (error: unknown) =>
-        error instanceof AppError &&
-        error.code === "VERIFICATION_STORAGE_UNAVAILABLE" &&
-        error.statusCode === 503,
-    );
-
-    assert.equal(await prisma.user.count({ where: { email } }), 0);
-    assert.equal(
-      await prisma.studentProfile.count({ where: { user: { email } } }),
-      0,
-    );
-  } finally {
-    env.STUDENT_DATA_ENCRYPTION_KEY = originalEncryptionKey;
-    await cleanupTestUser(email);
-  }
-});
-
-test("Registration succeeds and remains pending when account verification email delivery fails", async () => {
+test("ordinary registration creates no student records and remains usable when email delivery fails", async () => {
   const email = "test-registration-email-delivery-failure@example.com";
   await cleanupTestUser(email);
 
@@ -130,8 +96,6 @@ test("Registration succeeds and remains pending when account verification email 
         email,
         password: "test-password-12345",
         displayName: "Test User",
-        verificationMethod: VerificationMethod.MANUAL_STUDENT,
-        registrationNumber: "ABC123DEF470",
       },
     });
 
@@ -139,6 +103,7 @@ test("Registration succeeds and remains pending when account verification email 
     const user = await prisma.user.findUnique({
       where: { email },
       include: {
+        profile: true,
         studentProfile: true,
         verificationsSubmitted: true,
         verificationTokens: true,
@@ -147,9 +112,9 @@ test("Registration succeeds and remains pending when account verification email 
     assert.ok(user);
     assert.equal(user.accountStatus, AccountStatus.ACTIVE);
     assert.equal(user.emailVerifiedAt, null);
-    assert.equal(user.studentProfile?.verificationStatus, VerificationStatus.PENDING);
-    assert.equal(user.verificationsSubmitted[0]?.status, VerificationStatus.PENDING);
-    assert.equal(user.verificationsSubmitted[0]?.method, VerificationMethod.MANUAL_STUDENT);
+    assert.equal(user.profile?.nickname, "Test User");
+    assert.equal(user.studentProfile, null);
+    assert.equal(user.verificationsSubmitted.length, 0);
     assert.equal(user.verificationTokens.length, 1);
     assert.equal(user.verificationTokens[0]?.purpose, EmailVerificationPurpose.ACCOUNT_EMAIL);
     assert.ok(attemptedToken);
@@ -166,6 +131,14 @@ test("Registration succeeds and remains pending when account verification email 
       () => assertSellerAuthorized(user.id),
       (error: unknown) => error instanceof AppError && error.code === "SELLER_EMAIL_UNVERIFIED",
     );
+
+    await verifyEmail(attemptedToken);
+    const verified = await prisma.user.findUnique({ where: { id: user.id } });
+    assert.ok(verified?.emailVerifiedAt);
+    await assert.rejects(
+      () => verifyEmail(attemptedToken),
+      (error: unknown) => error instanceof AppError && error.code === "INVALID_VERIFICATION_TOKEN",
+    );
   } finally {
     resend.emails.send = originalSend;
     await cleanupTestUser(email);
@@ -181,8 +154,6 @@ test("duplicate registration email returns a conflict without creating another a
       email,
       password: "test-password-12345",
       displayName: "Test User",
-      verificationMethod: undefined,
-      registrationNumber: undefined,
     });
 
     const response = await app.inject({
@@ -207,70 +178,19 @@ test("duplicate registration email returns a conflict without creating another a
   }
 });
 
-test("registration transaction rolls back user and profile when student data conflicts", async () => {
-  const existingEmail = "test-registration-unique-student@example.com";
-  const rejectedEmail = "test-registration-rollback@example.com";
-  const registrationNumber = "ROLLBACK123456";
-  await cleanupTestUser(existingEmail);
-  await cleanupTestUser(rejectedEmail);
-
-  try {
-    await register({
-      email: existingEmail,
-      password: "test-password-12345",
-      displayName: "Existing Student",
-      verificationMethod: VerificationMethod.MANUAL_STUDENT,
-      registrationNumber,
-    });
-
-    await assert.rejects(
-      () => register({
-        email: rejectedEmail,
-        password: "test-password-12345",
-        displayName: "Duplicate Student",
-        verificationMethod: VerificationMethod.MANUAL_STUDENT,
-        registrationNumber,
-      }),
-      (error: unknown) => error instanceof AppError && error.code === "REGISTRATION_CONFLICT",
-    );
-
-    assert.equal(await prisma.user.count({ where: { email: rejectedEmail } }), 0);
-    assert.equal(await prisma.studentProfile.count({ where: { user: { email: rejectedEmail } } }), 0);
-  } finally {
-    await cleanupTestUser(existingEmail);
-    await cleanupTestUser(rejectedEmail);
-  }
-});
-
-test("university verification email failure does not fail account registration", async () => {
-  const email = "test-registration-university-email-failure@example.com";
+test("verification resend is rate limited by IP and normalized email", async () => {
+  const email = "test-resend-throttle@example.com";
   await cleanupTestUser(email);
-
-  const originalSend = resend.emails.send;
-  resend.emails.send = async () => {
-    throw new Error("Email provider unavailable");
-  };
-
   try {
-    const user = await register({
-      email,
-      password: "test-password-12345",
-      displayName: "Test Student",
-      verificationMethod: VerificationMethod.UNIVERSITY_EMAIL,
-      registrationNumber: "UNIVERSITY123456",
-    });
-
-    const records = await prisma.emailVerificationToken.findMany({
-      where: { userId: user.id },
-      orderBy: { purpose: "asc" },
-    });
-    assert.equal(records.length, 2);
-    assert.deepEqual(
-      new Set(records.map((record) => record.purpose)),
-      new Set([EmailVerificationPurpose.ACCOUNT_EMAIL, EmailVerificationPurpose.UNIVERSITY_EMAIL]),
-    );
+    await register({ email, password: "test-password-12345", displayName: "Test User" });
+    const responses = await Promise.all([1, 2, 3, 4].map(() => app.inject({
+      method: "POST",
+      url: "/api/v1/auth/resend-verification",
+      payload: { email: email.toUpperCase() },
+    })));
+    assert.deepEqual(responses.map((response) => response.statusCode), [202, 202, 202, 429]);
+    assert.equal(responses[3]?.json().error.code, "AUTH_RATE_LIMITED");
   } finally {
-    resend.emails.send = originalSend;
     await cleanupTestUser(email);
   }
 });
@@ -301,8 +221,6 @@ test("Authentication: invalid credentials returns generic error", async (t) => {
       email,
       password: "correct-password-123",
       displayName: "Test User",
-      verificationMethod: VerificationMethod.MANUAL_STUDENT,
-      registrationNumber: "ABC123DEF456",
     });
 
     // Approve the account
@@ -343,8 +261,6 @@ test("Authentication: invalid credentials returns generic error", async (t) => {
       email,
       password: "test-password-12345",
       displayName: "Test User",
-      verificationMethod: VerificationMethod.MANUAL_STUDENT,
-      registrationNumber: "ABC123DEF457",
     });
 
     const result = await authenticate({
@@ -366,8 +282,22 @@ test("Authentication: invalid credentials returns generic error", async (t) => {
       email,
       password: "test-password-12345",
       displayName: "Legacy User",
-      verificationMethod: VerificationMethod.MANUAL_STUDENT,
-      registrationNumber: "LEGACY123456",
+    });
+    const legacyProfile = await prisma.studentProfile.create({
+      data: {
+        userId: legacyUser.id,
+        displayName: "Historical Student",
+        verificationStatus: VerificationStatus.PENDING,
+        registrationNumberHash: "a".repeat(64),
+      },
+    });
+    await prisma.verification.create({
+      data: {
+        userId: legacyUser.id,
+        studentProfileId: legacyProfile.id,
+        method: VerificationMethod.MANUAL_STUDENT,
+        status: VerificationStatus.PENDING,
+      },
     });
     const profileBefore = await prisma.studentProfile.findUnique({
       where: { userId: legacyUser.id },
@@ -435,8 +365,6 @@ test("Authentication: invalid credentials returns generic error", async (t) => {
         email,
         password: "test-password-12345",
         displayName: "Test User",
-        verificationMethod: VerificationMethod.MANUAL_STUDENT,
-        registrationNumber: `ABC123${accountStatus === AccountStatus.SUSPENDED ? "458" : "459"}`,
       });
 
       await prisma.user.update({
@@ -473,8 +401,6 @@ for (const accountStatus of [AccountStatus.SUSPENDED, AccountStatus.DISABLED]) {
       email,
       password: "test-password-12345",
       displayName: "Race User",
-      verificationMethod: VerificationMethod.MANUAL_STUDENT,
-      registrationNumber: `RACE123${accountStatus === AccountStatus.SUSPENDED ? "458" : "459"}`,
     });
     await prisma.user.update({
       where: { id: user.id },
@@ -515,8 +441,6 @@ for (const accountStatus of [AccountStatus.SUSPENDED, AccountStatus.DISABLED]) {
       email,
       password: "test-password-12345",
       displayName: "Session Race User",
-      verificationMethod: VerificationMethod.MANUAL_STUDENT,
-      registrationNumber: `SESSION123${accountStatus === AccountStatus.SUSPENDED ? "458" : "459"}`,
     });
     const sessionToken = createOpaqueToken();
     let releaseModerator: (() => void) | undefined;
@@ -563,8 +487,6 @@ test("Session: revoked session cannot be used", async () => {
     email,
     password: "test-password-12345",
     displayName: "Test User",
-    verificationMethod: VerificationMethod.MANUAL_STUDENT,
-    registrationNumber: "ABC123DEF459",
   });
 
   // Approve account
@@ -601,8 +523,6 @@ test("Session: expired session cannot be used", async () => {
     email,
     password: "test-password-12345",
     displayName: "Test User",
-    verificationMethod: VerificationMethod.MANUAL_STUDENT,
-    registrationNumber: "ABC123DEF460",
   });
 
   // Approve account
@@ -637,8 +557,6 @@ test("Session: disabled account cannot use existing sessions", async () => {
     email,
     password: "test-password-12345",
     displayName: "Test User",
-    verificationMethod: VerificationMethod.MANUAL_STUDENT,
-    registrationNumber: "ABC123DEF461",
   });
 
   // Approve account
@@ -677,8 +595,6 @@ test("Password change: invalidates all sessions", async () => {
     email,
     password: "original-password-123",
     displayName: "Test User",
-    verificationMethod: VerificationMethod.MANUAL_STUDENT,
-    registrationNumber: "ABC123DEF462",
   });
 
   // Approve account
@@ -727,8 +643,6 @@ test("Security: disabled or suspended accounts cannot receive or use token-based
       email,
       password: "test-password-12345",
       displayName: "Test User",
-      verificationMethod: VerificationMethod.MANUAL_STUDENT,
-      registrationNumber: "ABC123DEF463",
     });
 
     await prisma.user.update({
@@ -751,8 +665,6 @@ test("Security: disabled or suspended accounts cannot receive or use token-based
       email,
       password: "test-password-12345",
       displayName: "Test User",
-      verificationMethod: VerificationMethod.MANUAL_STUDENT,
-      registrationNumber: "ABC123DEF464",
     });
 
     await prisma.user.update({
@@ -788,8 +700,6 @@ test("Security: disabled or suspended accounts cannot receive or use token-based
       email,
       password: "test-password-12345",
       displayName: "Test User",
-      verificationMethod: VerificationMethod.MANUAL_STUDENT,
-      registrationNumber: "ABC123DEF465",
     });
 
     await prisma.user.update({
@@ -826,8 +736,6 @@ test("DTO: toSafeUser does not expose sensitive fields", async () => {
     email,
     password: "test-password-12345",
     displayName: "Test User",
-    verificationMethod: VerificationMethod.MANUAL_STUDENT,
-    registrationNumber: "ABC123DEF466",
   });
 
   // Verify returned user object doesn't include passwordHash
