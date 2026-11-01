@@ -10,6 +10,7 @@ import {
 
 import "../scripts/test-database.js";
 
+process.env.EMAIL_PROVIDER = "resend";
 process.env.RESEND_API_KEY = "test-key";
 process.env.EMAIL_FROM = "noreply@campus-marketplace.test";
 process.env.APP_URL = "http://localhost:3000";
@@ -17,32 +18,20 @@ process.env.CORS_ORIGIN = "http://localhost:5173";
 process.env.STUDENT_DATA_ENCRYPTION_KEY = Buffer.alloc(32, 3).toString("base64");
 
 const sendCalls: Array<{ to: string; subject: string }> = [];
-const originalFetch = globalThis.fetch;
-const { resend } = await import("../src/lib/email.js");
+const { emailTransport } = await import("../src/lib/email.js");
+const originalSend = emailTransport.send;
 
 before(() => {
-  globalThis.fetch = async () => ({
-    ok: true,
-    status: 200,
-    json: async () => ({ id: "mock-email-id" }),
-    text: async () => "ok",
-    headers: new Headers(),
-  }) as Response;
-
-  resend.emails.send = async (payload) => {
+  emailTransport.send = async (message) => {
     sendCalls.push({
-      to: Array.isArray(payload.to) ? payload.to[0] : payload.to,
-      subject: payload.subject,
+      to: message.to,
+      subject: message.subject,
     });
-    return {
-      data: { id: "mock-email-id" },
-      error: null,
-    } as Awaited<ReturnType<typeof resend.emails.send>>;
   };
 });
 
 after(() => {
-  globalThis.fetch = originalFetch;
+  emailTransport.send = originalSend;
   sendCalls.length = 0;
 });
 
@@ -80,13 +69,13 @@ test("ordinary registration creates no student records and remains usable when e
   const email = "test-registration-email-delivery-failure@example.com";
   await cleanupTestUser(email);
 
-  const originalSend = resend.emails.send;
+  const previousSend = emailTransport.send;
   let attemptedToken: string | undefined;
-  resend.emails.send = async (payload) => {
-    const html = typeof payload.html === "string" ? payload.html : "";
+  emailTransport.send = async (message) => {
+    const html = message.html;
     const tokenMatch = html.match(/verify-email\?token=([^"&]+)/);
     attemptedToken = tokenMatch ? decodeURIComponent(tokenMatch[1]) : undefined;
-    throw new Error("Resend testing mode rejected recipient");
+    throw new Error("Email provider rejected recipient");
   };
 
   try {
@@ -141,7 +130,102 @@ test("ordinary registration creates no student records and remains usable when e
       (error: unknown) => error instanceof AppError && error.code === "INVALID_VERIFICATION_TOKEN",
     );
   } finally {
-    resend.emails.send = originalSend;
+    emailTransport.send = previousSend;
+    await cleanupTestUser(email);
+  }
+});
+
+test("resend-confirmation and password-reset delivery failures keep generic responses", async () => {
+  const email = `test-email-delivery-failure-${randomUUID()}@example.test`;
+  await cleanupTestUser(email);
+  const user = await register({
+    email,
+    password: "test-password-12345",
+    displayName: "Test User",
+  });
+  const previousSend = emailTransport.send;
+  const previousConsoleError = console.error;
+  const loggedErrors: string[] = [];
+  emailTransport.send = async () => {
+    throw new Error("smtp-secret-and-email-token");
+  };
+  console.error = (...args: unknown[]) => {
+    loggedErrors.push(args.map(String).join(" "));
+  };
+
+  try {
+    const resendResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/resend-verification",
+      remoteAddress: "192.0.2.91",
+      payload: { email },
+    });
+    assert.equal(resendResponse.statusCode, 202);
+    assert.deepEqual(resendResponse.json(), {
+      message: "If the account is eligible, verification instructions will be sent shortly.",
+    });
+
+    const resetResponse = await app.inject({
+      method: "POST",
+      url: "/api/v1/auth/forgot-password",
+      remoteAddress: "192.0.2.92",
+      payload: { email },
+    });
+    assert.equal(resetResponse.statusCode, 202);
+    assert.deepEqual(resetResponse.json(), {
+      message: "If the account exists, password reset instructions will be sent shortly.",
+    });
+
+    assert.equal(
+      await prisma.emailVerificationToken.count({ where: { userId: user.id } }),
+      2,
+    );
+    assert.equal(
+      await prisma.passwordResetToken.count({ where: { userId: user.id } }),
+      1,
+    );
+    assert.doesNotMatch(loggedErrors.join(" "), /smtp-secret|email-token/);
+  } finally {
+    emailTransport.send = previousSend;
+    console.error = previousConsoleError;
+    await cleanupTestUser(email);
+  }
+});
+
+test("password reset revokes active sessions and accepts the new password", async () => {
+  const email = `test-password-reset-session-revocation-${randomUUID()}@example.test`;
+  await cleanupTestUser(email);
+
+  try {
+    const user = await register({
+      email,
+      password: "original-password-12345",
+      displayName: "Test User",
+    });
+    const sessionHash = hashToken(createOpaqueToken());
+    await createSession(user.id, sessionHash, {});
+    assert.ok(await getSessionUser(sessionHash));
+
+    const resetToken = createOpaqueToken();
+    await prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: hashToken(resetToken),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const newPassword = "new-password-1234567";
+    await resetPassword({ token: resetToken, password: newPassword });
+
+    assert.equal(await getSessionUser(sessionHash), null);
+    const authenticated = await authenticate({
+      email,
+      identifier: undefined,
+      password: newPassword,
+    });
+    assert.equal(authenticated.user.email, email);
+  } finally {
     await cleanupTestUser(email);
   }
 });

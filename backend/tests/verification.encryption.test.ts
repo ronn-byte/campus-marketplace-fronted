@@ -4,6 +4,7 @@ import test from "node:test";
 process.env.NODE_ENV = "test";
 process.env.DATABASE_URL = "postgresql://127.0.0.1:5432/test";
 process.env.CORS_ORIGIN = "http://localhost:5173";
+process.env.EMAIL_PROVIDER = "resend";
 process.env.RESEND_API_KEY = "test-key";
 process.env.EMAIL_FROM = "noreply@example.test";
 process.env.APP_URL = "http://localhost:3000";

@@ -3,6 +3,7 @@ import test, { after } from "node:test";
 import { AccountStatus, Role, VerificationStatus } from "@prisma/client";
 import "../scripts/test-database.js";
 
+process.env.EMAIL_PROVIDER = "resend";
 process.env.RESEND_API_KEY = "test-key";
 process.env.EMAIL_FROM = "noreply@campus-marketplace.test";
 process.env.APP_URL = "http://localhost:3000";

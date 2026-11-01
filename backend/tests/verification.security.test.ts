@@ -14,7 +14,8 @@ import { MAX_LISTING_PRICE } from "../src/modules/listings/listing.schemas.js";
 
 import "../scripts/test-database.js";
 
-process.env.RESEND_API_KEY ??= "test-key";
+process.env.EMAIL_PROVIDER = "resend";
+process.env.RESEND_API_KEY = "test-key";
 process.env.EMAIL_FROM ??= "noreply@campus-marketplace.test";
 process.env.APP_URL ??= "http://localhost:3000";
 process.env.CORS_ORIGIN ??= "http://localhost:5173";
@@ -25,7 +26,7 @@ const { deleteListingImageFiles } = await import("../src/lib/storage.js");
 const { addListingImages, removeListingImage } = await import("../src/modules/listings/listing.service.js");
 const sharp = (await import("sharp")).default;
 const { prisma } = await import("../src/lib/prisma.js");
-const { resend } = await import("../src/lib/email.js");
+const { emailTransport } = await import("../src/lib/email.js");
 const { env } = await import("../src/config/env.js");
 const { buildApp } = await import("../src/app/app.js");
 const { authenticate, createSession } = await import("../src/modules/auth/auth.service.js");
@@ -1184,14 +1185,13 @@ test("university email verification proves the expected registration-number mail
     `${registrationNumber.slice(0, 5)} / ${registrationNumber.slice(6, 10)} / ${registrationNumber.slice(11)}`;
 
   const messages: Array<{ to: string; html: string }> = [];
-  const originalSend = resend.emails.send;
+  const originalSend = emailTransport.send;
 
-  resend.emails.send = async (payload) => {
+  emailTransport.send = async (message) => {
     messages.push({
-      to: Array.isArray(payload.to) ? payload.to[0] : payload.to,
-      html: typeof payload.html === "string" ? payload.html : "",
+      to: message.to,
+      html: message.html,
     });
-    return { data: { id: "test-email-id" }, error: null } as never;
   };
 
   try {
@@ -1295,6 +1295,50 @@ test("university email verification proves the expected registration-number mail
       registrationNumber.replace(/\D/g, ""),
     );
   } finally {
-    resend.emails.send = originalSend;
+    emailTransport.send = originalSend;
+  }
+});
+
+test("university email delivery failure remains an error after verification records are created", async () => {
+  const actor = await createActor({ hasProfile: false });
+  const registrationNumber = "SC201/1234/5678";
+  const previousSend = emailTransport.send;
+  const previousConsoleError = console.error;
+  const loggedErrors: string[] = [];
+  emailTransport.send = async () => {
+    throw new Error("smtp-password-and-token-must-not-leak");
+  };
+  console.error = (...args: unknown[]) => {
+    loggedErrors.push(args.map(String).join(" "));
+  };
+
+  try {
+    await assert.rejects(
+      () => submitVerification(actor.user.id, {
+        method: VerificationMethod.UNIVERSITY_EMAIL,
+        registrationNumber,
+        email: expectedMutStudentEmail(registrationNumber),
+      }),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(error.message, "University verification email could not be sent.");
+        return true;
+      },
+    );
+
+    const verification = await prisma.verification.findFirst({
+      where: { userId: actor.user.id, method: VerificationMethod.UNIVERSITY_EMAIL },
+    });
+    const token = await prisma.emailVerificationToken.findFirst({
+      where: { userId: actor.user.id, purpose: "UNIVERSITY_EMAIL" },
+    });
+
+    assert.equal(verification?.status, VerificationStatus.PENDING);
+    assert.ok(token);
+    assert.equal(token.consumedAt, null);
+    assert.doesNotMatch(loggedErrors.join(" "), /smtp-password|token-must-not-leak/);
+  } finally {
+    emailTransport.send = previousSend;
+    console.error = previousConsoleError;
   }
 });

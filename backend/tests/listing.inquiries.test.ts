@@ -9,7 +9,8 @@ import {
 
 import "../scripts/test-database.js";
 
-process.env.RESEND_API_KEY ??= "test-key";
+process.env.EMAIL_PROVIDER = "resend";
+process.env.RESEND_API_KEY = "test-key";
 process.env.EMAIL_FROM ??= "noreply@campus-marketplace.test";
 process.env.APP_URL ??= "http://localhost:3000";
 process.env.CORS_ORIGIN ??= "http://localhost:5173";

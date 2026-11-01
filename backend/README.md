@@ -43,8 +43,22 @@ Required environment variables:
 - `SESSION_TTL_HOURS`: server-side session lifetime
 - `PASSWORD_RESET_TTL_MINUTES`: password reset token lifetime
 - `EMAIL_VERIFICATION_TTL_HOURS`: email verification token lifetime
+- `EMAIL_PROVIDER`: `resend` (default, including rollback compatibility) or `smtp`
+- `EMAIL_FROM`: sender address; for Gmail SMTP it must match `SMTP_USER`
+- `RESEND_API_KEY`: required only when `EMAIL_PROVIDER=resend`
+- `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASS`: required only when `EMAIL_PROVIDER=smtp`
+- `APP_URL`: public application origin used to construct email links
 
 The server fails at startup when required values are missing or invalid.
+
+For a temporary Gmail SMTP pilot, enable 2-Step Verification on a dedicated
+Google account and use its App Password as `SMTP_PASS`; do not use the normal
+Google account password. Set `SMTP_HOST=smtp.gmail.com`, `SMTP_PORT=465`, and
+`SMTP_SECURE=true` (or port `587` with `SMTP_SECURE=false` for STARTTLS).
+`EMAIL_FROM` must be the authenticated `SMTP_USER` address. The SMTP transport
+uses TLS and bounded connection, greeting, and socket timeouts. SMTP connectivity
+is not required for the server to start. Gmail may rate-limit or block automated
+sending, so this provider is intended only for a small temporary pilot.
 
 ## Database
 
@@ -97,7 +111,7 @@ This endpoint checks only that the API process is running.
 
 Authentication endpoints include registration, login, logout, `/auth/me`, email verification consumption, password reset, password change, and the frontend-compatible `/auth/session` alias. They require the authentication migration and a configured PostgreSQL database.
 
-Sessions are opaque random cookies. Only SHA-256 session hashes are stored in PostgreSQL. Passwords use Argon2id. Email delivery is intentionally not configured yet; verification and reset tokens are generated and stored hashed, but never returned or logged.
+Sessions are opaque random cookies. Only SHA-256 session hashes are stored in PostgreSQL. Passwords use Argon2id. Email delivery uses the configured provider; verification and reset tokens are generated and stored hashed, but never returned or logged.
 
 Authentication rate limiting is bounded in memory for the single-instance development architecture. A shared rate-limit store is required before horizontal production scaling.
 
