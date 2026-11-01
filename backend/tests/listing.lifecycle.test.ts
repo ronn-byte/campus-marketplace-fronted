@@ -43,7 +43,7 @@ async function createActor(options: ActorOptions = {}) {
       email,
       passwordHash: await hashPassword("phase2-lifecycle-test-password"),
       role: options.role ?? Role.STUDENT,
-      accountStatus: options.accountStatus ?? AccountStatus.ACTIVE,
+      accountStatus: AccountStatus.ACTIVE,
       emailVerifiedAt: options.emailVerified === false ? null : new Date(),
       ...(options.profileComplete === false
         ? {}
@@ -61,7 +61,10 @@ async function createActor(options: ActorOptions = {}) {
 
   const sessionToken = createOpaqueToken();
   await createSession(user.id, hashToken(sessionToken), {});
-  return { user, sessionToken };
+  const actor = options.accountStatus && options.accountStatus !== AccountStatus.ACTIVE
+    ? await prisma.user.update({ where: { id: user.id }, data: { accountStatus: options.accountStatus } })
+    : user;
+  return { user: actor, sessionToken };
 }
 
 function authHeaders(sessionToken: string) {
@@ -146,6 +149,24 @@ test("listing lifecycle actions require an authorized owner", async () => {
   );
   assert.equal(unverifiedResponse.statusCode, 403);
 
+  const unconfirmedEmail = await createActor({
+    emailVerified: false,
+    verificationStatus: VerificationStatus.APPROVED,
+  });
+  const reserveListing = await createListing(owner.user.id);
+  const soldListing = await createListing(owner.user.id);
+  const releaseListing = await createListing(owner.user.id, ListingStatus.RESERVED);
+
+  for (const [action, targetListing] of [
+    ["reserve", reserveListing],
+    ["sold", soldListing],
+    ["release-reservation", releaseListing],
+  ] as const) {
+    const response = await postAction(action, targetListing.id, unconfirmedEmail.sessionToken);
+    assert.equal(response.statusCode, 403, `${action} requires confirmed email`);
+    assert.equal(response.json().error.code, "SELLER_EMAIL_UNVERIFIED");
+  }
+
   const inactive = await createActor({
     accountStatus: AccountStatus.SUSPENDED,
   });
@@ -229,7 +250,11 @@ test("email-confirmed pending and rejected students can sell, but unconfirmed em
 
   const oldDraft = await createListing(unconfirmed.user.id, ListingStatus.DRAFT);
   await prisma.listingImage.create({
-    data: { listingId: oldDraft.id, objectKey: "test/ready-image", processingStatus: "READY" },
+    data: {
+      listingId: oldDraft.id,
+      objectKey: createListingObjectKey(oldDraft.id, "image/png"),
+      processingStatus: "READY",
+    },
   });
   const publish = await app.inject({
     method: "POST",
@@ -262,7 +287,11 @@ test("publishing requires a completed seller profile and does not require studen
   const listingId = create.json().listing.id as string;
   listingIds.push(listingId);
   await prisma.listingImage.create({
-    data: { listingId, objectKey: `test/${listingId}/ready`, processingStatus: "READY" },
+    data: {
+      listingId,
+      objectKey: createListingObjectKey(listingId, "image/png"),
+      processingStatus: "READY",
+    },
   });
 
   const incompletePublish = await app.inject({

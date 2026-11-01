@@ -42,7 +42,7 @@ async function createActor(options: ActorOptions = {}) {
       email,
       passwordHash: await hashPassword("phase2-inquiry-test-password"),
       role: options.role ?? Role.STUDENT,
-      accountStatus: options.accountStatus ?? AccountStatus.ACTIVE,
+      accountStatus: AccountStatus.ACTIVE,
       emailVerifiedAt: options.emailVerified === false ? null : new Date(),
       studentProfile: {
         create: {
@@ -58,7 +58,10 @@ async function createActor(options: ActorOptions = {}) {
 
   const sessionToken = createOpaqueToken();
   await createSession(user.id, hashToken(sessionToken), {});
-  return { user, sessionToken };
+  const actor = options.accountStatus && options.accountStatus !== AccountStatus.ACTIVE
+    ? await prisma.user.update({ where: { id: user.id }, data: { accountStatus: options.accountStatus }, include: { studentProfile: true } })
+    : user;
+  return { user: actor, sessionToken };
 }
 
 function authHeaders(sessionToken: string) {
@@ -565,6 +568,10 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
 
 test("seller inquiry status transitions and lifecycle interactions are enforced", async (t) => {
   const seller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const unconfirmedEmailSeller = await createActor({
+    emailVerified: false,
+    verificationStatus: VerificationStatus.APPROVED,
+  });
   const buyer = await createActor({ verificationStatus: VerificationStatus.APPROVED });
   const listing = await createListing(seller.user.id, ListingStatus.PUBLISHED);
 
@@ -575,6 +582,17 @@ test("seller inquiry status transitions and lifecycle interactions are enforced"
       message: "Can you confirm availability?",
       status: "OPEN",
     },
+  });
+
+  await t.test("seller with unconfirmed email cannot update inquiry status", async () => {
+    const response = await app.inject({
+      method: "PATCH",
+      url: `/api/v1/listings/${listing.id}/inquiries/${inquiry.id}`,
+      headers: authHeaders(unconfirmedEmailSeller.sessionToken),
+      payload: { status: "RESPONDED" },
+    });
+    assert.equal(response.statusCode, 403);
+    assert.equal(response.json().error.code, "SELLER_EMAIL_UNVERIFIED");
   });
 
   await t.test("valid seller transitions succeed", async () => {

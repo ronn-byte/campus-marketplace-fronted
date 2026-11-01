@@ -48,34 +48,47 @@ export async function getUserVerificationState(userId: string) {
   };
 }
 
-export async function assertSellerAuthorized(userId: string): Promise<void> {
+type EmailAuthorizationErrors = {
+  accountCode: string;
+  accountMessage: string;
+  emailCode: string;
+  emailMessage: string;
+};
+
+async function assertActiveEmailVerified(
+  userId: string,
+  errors: EmailAuthorizationErrors,
+): Promise<void> {
   const user = await prisma.user.findUnique({
     where: { id: userId },
     select: { accountStatus: true, emailVerifiedAt: true },
   });
 
   if (!user || user.accountStatus !== AccountStatus.ACTIVE) {
-    throw new AppError(403, "SELLER_NOT_ELIGIBLE", "Your account is not eligible to sell.");
+    throw new AppError(403, errors.accountCode, errors.accountMessage);
   }
 
   if (!user.emailVerifiedAt) {
-    throw new AppError(403, "SELLER_EMAIL_UNVERIFIED", "Confirm your email address before creating or managing listings.");
+    throw new AppError(403, errors.emailCode, errors.emailMessage);
   }
 }
 
-export async function assertBuyerAuthorized(userId: string): Promise<void> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: { accountStatus: true, emailVerifiedAt: true },
+export async function assertSellerAuthorized(userId: string): Promise<void> {
+  await assertActiveEmailVerified(userId, {
+    accountCode: "SELLER_NOT_ELIGIBLE",
+    accountMessage: "Your account is not eligible to sell.",
+    emailCode: "SELLER_EMAIL_UNVERIFIED",
+    emailMessage: "Confirm your email address before creating or managing listings.",
   });
+}
 
-  if (!user || user.accountStatus !== AccountStatus.ACTIVE) {
-    throw new AppError(403, "BUYER_NOT_ELIGIBLE", "Your account is not eligible for protected buyer actions.");
-  }
-
-  if (!user.emailVerifiedAt) {
-    throw new AppError(403, "EMAIL_VERIFICATION_REQUIRED", "Confirm your email before using protected buyer actions.");
-  }
+export async function assertBuyerAuthorized(userId: string): Promise<void> {
+  await assertActiveEmailVerified(userId, {
+    accountCode: "BUYER_NOT_ELIGIBLE",
+    accountMessage: "Your account is not eligible for protected buyer actions.",
+    emailCode: "EMAIL_VERIFICATION_REQUIRED",
+    emailMessage: "Confirm your email before using protected buyer actions.",
+  });
 }
 
 export async function listPendingManualVerifications() {

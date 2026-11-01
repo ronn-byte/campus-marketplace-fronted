@@ -56,7 +56,7 @@ async function createActor(options: ActorOptions = {}) {
       email,
       passwordHash: await hashPassword(password),
       role: options.role ?? Role.STUDENT,
-      accountStatus: options.accountStatus ?? AccountStatus.ACTIVE,
+      accountStatus: AccountStatus.ACTIVE,
       emailVerifiedAt: options.emailVerified === false ? null : new Date(),
       ...(options.profileComplete === false
         ? {}
@@ -90,7 +90,10 @@ async function createActor(options: ActorOptions = {}) {
 
   const sessionToken = createOpaqueToken();
   await createSession(user.id, hashToken(sessionToken), {});
-  return { user, email, password, sessionToken, verificationId };
+  const actor = options.accountStatus && options.accountStatus !== AccountStatus.ACTIVE
+    ? await prisma.user.update({ where: { id: user.id }, data: { accountStatus: options.accountStatus } })
+    : user;
+  return { user: actor, email, password, sessionToken, verificationId };
 }
 
 function authHeaders(sessionToken: string) {

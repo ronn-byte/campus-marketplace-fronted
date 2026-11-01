@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test, { before, after } from "node:test";
+import { randomUUID } from "node:crypto";
 import {
   AccountStatus,
   EmailVerificationPurpose,
@@ -179,15 +180,22 @@ test("duplicate registration email returns a conflict without creating another a
 });
 
 test("verification resend is rate limited by IP and normalized email", async () => {
-  const email = "test-resend-throttle@example.com";
+  const runId = randomUUID();
+  const email = `test-resend-throttle-${runId}@example.com`;
+  const addressId = runId.replaceAll("-", "");
+  const remoteAddress = `2001:db8:${addressId.slice(0, 4)}:${addressId.slice(4, 8)}:${addressId.slice(8, 12)}:${addressId.slice(12, 16)}::1`;
   await cleanupTestUser(email);
   try {
     await register({ email, password: "test-password-12345", displayName: "Test User" });
-    const responses = await Promise.all([1, 2, 3, 4].map(() => app.inject({
-      method: "POST",
-      url: "/api/v1/auth/resend-verification",
-      payload: { email: email.toUpperCase() },
-    })));
+    const responses = [];
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      responses.push(await app.inject({
+        method: "POST",
+        url: "/api/v1/auth/resend-verification",
+        remoteAddress,
+        payload: { email: email.toUpperCase() },
+      }));
+    }
     assert.deepEqual(responses.map((response) => response.statusCode), [202, 202, 202, 429]);
     assert.equal(responses[3]?.json().error.code, "AUTH_RATE_LIMITED");
   } finally {
