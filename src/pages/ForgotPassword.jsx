@@ -19,7 +19,11 @@ export default function ForgotPassword() {
     await runWithLoading(async () => {
       setStatus((current) => ({ ...current, error: "" }));
       try {
-        await apiClient.post("/auth/forgot-password", { email });
+        await apiClient.post(
+          "/auth/forgot-password",
+          { email },
+          { timeout: 25_000 },
+        );
         showFeedback({
           type: "success",
           title: "Check your inbox",

@@ -63,7 +63,11 @@ export default function Settings() {
     setEmailError("");
     await runWithLoading(async () => {
       try {
-        await apiClient.post("/auth/resend-verification", { email: user.email });
+        await apiClient.post(
+          "/auth/resend-verification",
+          { email: user.email },
+          { timeout: 25_000 },
+        );
         showFeedback({ type: "success", title: "Request received", message: "If your account is eligible, a verification email will be sent shortly." });
       } catch (error) {
         const result = classifyApiError(error);

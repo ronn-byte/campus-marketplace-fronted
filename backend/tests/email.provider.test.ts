@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { Socket } from "node:net";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -12,7 +13,9 @@ process.env.EMAIL_FROM = "noreply@example.test";
 process.env.APP_URL = "http://localhost:3000";
 
 const {
+  createEmailDiagnostic,
   createEmailProviderSender,
+  createSmtpEmailSender,
   emailTransport,
   sendPasswordResetEmail,
   sendUniversityVerificationEmail,
@@ -109,10 +112,13 @@ test("SMTP provider configures Nodemailer with bounded timeouts and validated TL
     const transports = [];
     nodemailer.createTransport = (options) => {
       transports.push(options);
-      return { sendMail: async () => ({}) };
+      return { sendMail: async () => ({}), close: () => {} };
     };
+    console.log = () => {};
+    console.error = () => {};
 
-    await import(${JSON.stringify(emailModuleUrl)});
+    const email = await import(${JSON.stringify(emailModuleUrl)});
+    await email.sendVerificationEmail("recipient@example.test", "test-token");
 
     const options = transports[0] ?? {};
     const checks = {
@@ -127,6 +133,7 @@ test("SMTP provider configures Nodemailer with bounded timeouts and validated TL
       greetingTimeout: options.greetingTimeout === 10000,
       socketTimeout: options.socketTimeout === 20000,
       certificateValidation: options.tls?.rejectUnauthorized === true,
+      customSocketProvider: typeof options.getSocket === "function",
     };
 
     process.stdout.write(JSON.stringify(checks));
@@ -158,9 +165,13 @@ test("SMTP provider configures Nodemailer with bounded timeouts and validated TL
     },
   );
 
-  assert.equal(result.status, 0, "Isolated SMTP transport configuration check failed.");
-  const checks = JSON.parse(result.stdout) as Record<string, boolean>;
-  assert.deepEqual(checks, {
+    assert.equal(
+      result.status,
+      0,
+      `Isolated SMTP transport configuration check failed: ${result.stderr}`,
+    );
+    const checks = JSON.parse(result.stdout) as Record<string, boolean>;
+    assert.deepEqual(checks, {
     createdExactlyOneTransport: true,
     host: true,
     port: true,
@@ -172,7 +183,275 @@ test("SMTP provider configures Nodemailer with bounded timeouts and validated TL
     greetingTimeout: true,
     socketTimeout: true,
     certificateValidation: true,
+    customSocketProvider: true,
   });
+});
+
+test("SMTP authentication and connection timeout failures are classified safely", () => {
+  assert.deepEqual(
+    createEmailDiagnostic(
+      "smtp",
+      Object.assign(new Error("untrusted detail"), {
+        code: "EAUTH",
+        command: "AUTH XOAUTH2",
+        responseCode: 535,
+      }),
+    ),
+    {
+      provider: "smtp",
+      category: "authentication",
+      code: "EAUTH",
+      command: "AUTH",
+      responseCode: 535,
+    },
+  );
+  assert.deepEqual(
+    createEmailDiagnostic(
+      "smtp",
+      Object.assign(new Error("untrusted detail"), {
+        code: "ETIMEDOUT",
+        command: "CONN",
+      }),
+    ),
+    {
+      provider: "smtp",
+      category: "connection_timeout",
+      code: "ETIMEDOUT",
+      command: "CONN",
+    },
+  );
+});
+
+test("email diagnostics omit credentials, recipients, tokens, and message content", () => {
+  const diagnostic = createEmailDiagnostic(
+    "smtp",
+    Object.assign(
+      new Error("SMTP_PASS=private-password token=private-token"),
+      {
+        code: "EAUTH",
+        command: "AUTH private-recipient@example.test private-token",
+        responseCode: 535,
+        response: "private-message-content private-password",
+        recipient: "private-recipient@example.test",
+      },
+    ),
+  );
+  const serialized = JSON.stringify(diagnostic);
+
+  assert.deepEqual(diagnostic, {
+    provider: "smtp",
+    category: "authentication",
+    code: "EAUTH",
+    command: "AUTH",
+    responseCode: 535,
+  });
+  for (const sensitiveValue of [
+    "private-password",
+    "private-token",
+    "private-recipient@example.test",
+    "private-message-content",
+  ]) {
+    assert.doesNotMatch(serialized, new RegExp(sensitiveValue));
+  }
+});
+
+test("SMTP delivery deadline destroys the active socket and closes its transport", async () => {
+  let connectorSocket: Socket | undefined;
+  let getSocketCalled = false;
+  let closeCount = 0;
+  const sender = createSmtpEmailSender(
+    { host: "smtp.example.test", port: 465, secure: true },
+    (options) => ({
+      sendMail: () =>
+        new Promise((_resolve, reject) => {
+          getSocketCalled = true;
+          options.getSocket?.(options, (error, socketOptions) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+            const activeSocket = socketOptions?.connection as Socket | undefined;
+            activeSocket?.once("close", () => reject(new Error("socket closed")));
+          });
+        }),
+      close: () => {
+        closeCount += 1;
+      },
+    }),
+    (_options, callback) => {
+      const socket = new Socket();
+      connectorSocket = socket;
+      setImmediate(() => callback(null, socket));
+      return socket;
+    },
+    25,
+  );
+
+  await assert.rejects(
+    () => sender({
+      from: "sender@example.test",
+      to: "recipient@example.test",
+      subject: "Test",
+      html: "<p>Test</p>",
+    }),
+    (error: unknown) => {
+      assert.equal((error as { code?: string }).code, "EMAIL_DELIVERY_TIMEOUT");
+      return true;
+    },
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(getSocketCalled, true);
+  assert.ok(connectorSocket?.destroyed);
+  assert.equal(closeCount, 1);
+});
+
+async function assertSmtpPhaseTimesOut(
+  phase: "connection" | "authentication" | "message transmission",
+): Promise<void> {
+  const originalSetTimeout = globalThis.setTimeout;
+  const originalClearTimeout = globalThis.clearTimeout;
+  const scheduledTimers: NodeJS.Timeout[] = [];
+  const clearedTimers = new Set<NodeJS.Timeout>();
+  const unhandledRejections: unknown[] = [];
+  const onUnhandledRejection = (reason: unknown) => {
+    unhandledRejections.push(reason);
+  };
+  const trackedSetTimeout: typeof globalThis.setTimeout = (...args) => {
+    const timer = originalSetTimeout(...args);
+    scheduledTimers.push(timer);
+    return timer;
+  };
+  const trackedClearTimeout: typeof globalThis.clearTimeout = (timer) => {
+    if (timer && typeof timer === "object") clearedTimers.add(timer);
+    originalClearTimeout(timer);
+  };
+
+  let connectorSocket: Socket | undefined;
+  let activeSocket: Socket | undefined;
+  let observedPhase = "";
+  let closeCount = 0;
+  const sender = createSmtpEmailSender(
+    { host: "smtp.example.test", port: 465, secure: true },
+    (options) => ({
+      sendMail: () =>
+        new Promise((_resolve, reject) => {
+          options.getSocket?.(options, (error, socketOptions) => {
+            if (error) {
+              reject(error);
+              return;
+            }
+
+            activeSocket = socketOptions?.connection as Socket | undefined;
+            if (phase === "connection") {
+              reject(new Error("Unexpected connection completion."));
+              return;
+            }
+
+            observedPhase =
+              phase === "authentication" ? "AUTH" : "DATA";
+            activeSocket?.once("close", () => {
+              reject(new Error("SMTP socket closed during delivery."));
+            });
+          });
+        }),
+      close: () => {
+        closeCount += 1;
+      },
+    }),
+    (_options, callback) => {
+      const socket = new Socket();
+      connectorSocket = socket;
+      if (phase !== "connection") {
+        callback(null, socket);
+      }
+      return socket;
+    },
+    20,
+  );
+
+  globalThis.setTimeout = trackedSetTimeout;
+  globalThis.clearTimeout = trackedClearTimeout;
+  process.on("unhandledRejection", onUnhandledRejection);
+
+  try {
+    await assert.rejects(
+      () => sender({
+        from: "sender@example.test",
+        to: "recipient@example.test",
+        subject: "Test",
+        html: "<p>Test</p>",
+      }),
+      (error: unknown) => {
+        assert.equal(
+          (error as { code?: string }).code,
+          "EMAIL_DELIVERY_TIMEOUT",
+        );
+        return true;
+      },
+    );
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    assert.ok(connectorSocket?.destroyed, "the connected or pending socket is destroyed");
+    if (phase !== "connection") {
+      assert.equal(observedPhase, phase === "authentication" ? "AUTH" : "DATA");
+      assert.equal(activeSocket, connectorSocket);
+    }
+    assert.equal(closeCount, 1);
+    assert.equal(scheduledTimers.length, 1);
+    assert.ok(
+      clearedTimers.has(scheduledTimers[0]!),
+      "the delivery deadline timer is cleared",
+    );
+    assert.deepEqual(unhandledRejections, []);
+  } finally {
+    process.removeListener("unhandledRejection", onUnhandledRejection);
+    globalThis.setTimeout = originalSetTimeout;
+    globalThis.clearTimeout = originalClearTimeout;
+    connectorSocket?.destroy();
+  }
+}
+
+test("SMTP deadline destroys a TCP socket whose connection remains pending", async () => {
+  await assertSmtpPhaseTimesOut("connection");
+});
+
+test("SMTP deadline cleans up when authentication hangs", async () => {
+  await assertSmtpPhaseTimesOut("authentication");
+});
+
+test("SMTP deadline cleans up when message transmission hangs", async () => {
+  await assertSmtpPhaseTimesOut("message transmission");
+});
+
+test("Resend delivery deadline aborts its in-flight request", async () => {
+  let requestSignal: AbortSignal | undefined;
+  const sender = createEmailProviderSender(
+    "resend",
+    {
+      resend: {
+        emails: {
+          send: async (_message, options) => {
+            requestSignal = options?.signal;
+            return new Promise((_resolve, reject) => {
+              requestSignal?.addEventListener("abort", () => {
+                reject(new Error("request aborted"));
+              });
+            });
+          },
+        },
+      },
+    },
+    20,
+  );
+
+  await assert.rejects(() => sender({
+    from: "sender@example.test",
+    to: "recipient@example.test",
+    subject: "Test",
+    html: "<p>Test</p>",
+  }));
+  assert.equal(requestSignal?.aborted, true);
 });
 
 test("provider errors are replaced with a generic error without exposing details", async () => {
