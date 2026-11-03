@@ -512,6 +512,15 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
     buyerId: buyerA.user.id,
     message: "Need to know if it is still available.",
   });
+  const previewImageKey = createListingObjectKey(published.id, "image/png");
+  await prisma.listingImage.create({
+    data: {
+      listingId: published.id,
+      objectKey: previewImageKey,
+      sortOrder: 0,
+      processingStatus: "READY",
+    },
+  });
 
   await prisma.listingInquiryMessage.create({
     data: {
@@ -601,6 +610,13 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
     assert.equal(ownInquiries.json().inquiries.length, 2);
     assert.equal(ownInquiries.json().meta.total, 2);
     assert.ok(ownInquiries.json().inquiries.every((item: { listing: { id: string } }) => item.listing.id));
+    const preview = ownInquiries.json().inquiries.find(
+      (item: { id: string }) => item.id === firstPublishedInquiry.id,
+    );
+    assert.equal(preview.listing.images.length, 1);
+    assert.equal(preview.listing.images[0].sortOrder, 0);
+    assert.equal(typeof preview.listing.images[0].url, "string");
+    assert.equal(preview.listing.images[0].objectKey, undefined);
 
     const queryOverride = await app.inject({
       method: "GET",
@@ -756,6 +772,15 @@ test("inquiry conversations enforce participant access, read state, and sender c
   const inquiry = await prisma.listingInquiry.findFirstOrThrow({
     where: { listingId: listing.id, buyerId: buyer.user.id },
   });
+  const initialMessage = await prisma.listingInquiryMessage.findFirstOrThrow({
+    where: { inquiryId: inquiry.id, sequence: 1 },
+  });
+  // Mirror migration backfill: legacy read state is unknown, so the sentinel
+  // readAt=createdAt must remain unread to the seller until they open it.
+  await prisma.listingInquiryMessage.update({
+    where: { id: initialMessage.id },
+    data: { readAt: initialMessage.createdAt },
+  });
   const threadUrl = `/api/v1/listings/${listing.id}/inquiries/${inquiry.id}/messages`;
   const readUrl = `/api/v1/listings/${listing.id}/inquiries/${inquiry.id}/read`;
 
@@ -810,6 +835,13 @@ test("inquiry conversations enforce participant access, read state, and sender c
   });
   assert.equal(initialUnread.statusCode, 200, JSON.stringify(getSafeResponseDiagnostics(initialUnread)));
   assert.deepEqual(initialUnread.json().summary.seller, { threads: 1, messages: 1 });
+  const sellerThreadBeforeRead = await app.inject({
+    method: "GET",
+    url: threadUrl,
+    headers: authHeaders(seller.sessionToken),
+  });
+  assert.equal(sellerThreadBeforeRead.statusCode, 200);
+  assert.equal(sellerThreadBeforeRead.json().thread.unreadMessageCount, 1);
 
   const sellerRead = await app.inject({
     method: "POST",
@@ -818,6 +850,12 @@ test("inquiry conversations enforce participant access, read state, and sender c
   });
   assert.equal(sellerRead.statusCode, 200);
   assert.equal(sellerRead.json().updatedCount, 1);
+  const readInitialMessage = await prisma.listingInquiryMessage.findUniqueOrThrow({
+    where: { id: initialMessage.id },
+    select: { createdAt: true, readAt: true },
+  });
+  assert.ok(readInitialMessage.readAt);
+  assert.ok(readInitialMessage.readAt.getTime() > readInitialMessage.createdAt.getTime());
 
   const sellerUnreadAfterRead = await app.inject({
     method: "GET",

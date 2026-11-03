@@ -355,7 +355,9 @@ export default function MyListings() {
                     </>}
 
                     <button className="button button--secondary" type="button" aria-expanded={expandedListingId === listing.id} onClick={() => openInquiries(listing.id)}>
-                      {expandedListingId === listing.id ? "Hide inquiries" : "View inquiries"}
+                      {expandedListingId === listing.id
+                        ? "Hide inquiries"
+                        : `View inquiries (${listing.inquiryCount ?? 0})`}
                     </button>
                   </div>
                   {expandedListingId === listing.id && (

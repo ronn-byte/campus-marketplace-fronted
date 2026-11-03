@@ -1079,6 +1079,11 @@ export async function getBuyerInquiries(
             id: true,
             title: true,
             status: true,
+            images: {
+              where: { processingStatus: "READY", removedAt: null },
+              orderBy: { sortOrder: "asc" },
+              select: { id: true, objectKey: true, sortOrder: true },
+            },
             category: {
               select: {
                 id: true,
@@ -1107,7 +1112,15 @@ export async function getBuyerInquiries(
         createdAt: inquiry.createdAt,
         updatedAt: inquiry.updatedAt,
         unreadMessageCount: preview?.unreadMessageCount ?? 0,
-        listing: inquiry.listing,
+        listing: {
+          ...inquiry.listing,
+          // Expose only display URLs and ordering metadata, never storage keys.
+          images: inquiry.listing.images.map(({ id, objectKey, sortOrder }) => ({
+            id,
+            sortOrder,
+            url: getListingImageUrl(objectKey),
+          })),
+        },
       };
     }),
     meta: {
@@ -1341,6 +1354,7 @@ async function getInquiryPreviews(
       content: true,
       sequence: true,
       readAt: true,
+      createdAt: true,
     },
   });
 
@@ -1355,7 +1369,18 @@ async function getInquiryPreviews(
     ) {
       preview.message = message.content;
     }
-    if (message.sender === unreadSender && message.readAt === null) {
+    // Legacy rows are backfilled with readAt=createdAt because their prior
+    // schema had no read receipt. Treat that equality as an unread sentinel
+    // for the seller until they open the inquiry; never imply a historical read.
+    const isBackfilledUnread =
+      unreadSender === InquiryMessageSender.BUYER
+      && message.sender === InquiryMessageSender.BUYER
+      && message.sequence === 1
+      && message.readAt?.getTime() === message.createdAt.getTime();
+    if (
+      message.sender === unreadSender
+      && (message.readAt === null || isBackfilledUnread)
+    ) {
       preview.unreadMessageCount += 1;
     }
     previews.set(message.inquiryId, preview);
@@ -1453,7 +1478,15 @@ export async function getInquiryThread(
   });
   const sentCount = messages.filter((message) => message.sender === viewerRole).length;
   const unreadMessageCount = messages.filter(
-    (message) => message.sender !== viewerRole && message.readAt === null,
+    (message) => message.sender !== viewerRole && (
+      message.readAt === null
+      || (
+        viewerRole === InquiryMessageSender.SELLER
+        && message.sender === InquiryMessageSender.BUYER
+        && message.sequence === 1
+        && message.readAt.getTime() === message.createdAt.getTime()
+      )
+    ),
   ).length;
 
   return {
@@ -1488,18 +1521,30 @@ export async function markInquiryMessagesRead(
   }
 
   const readAt = new Date();
-  const result = await prisma.listingInquiryMessage.updateMany({
-    where: {
-      inquiryId,
-      sender: viewerRole === InquiryMessageSender.BUYER
-        ? InquiryMessageSender.SELLER
-        : InquiryMessageSender.BUYER,
-      readAt: null,
-    },
-    data: { readAt },
-  });
+  const oppositeSender = viewerRole === InquiryMessageSender.BUYER
+    ? InquiryMessageSender.SELLER
+    : InquiryMessageSender.BUYER;
+  const updatedCount = viewerRole === InquiryMessageSender.SELLER
+    ? await prisma.$executeRaw(Prisma.sql`
+        UPDATE "listing_inquiry_messages"
+        SET "readAt" = CASE
+          WHEN "sequence" = 1 AND "readAt" = "createdAt"
+            THEN GREATEST(CURRENT_TIMESTAMP, "createdAt" + INTERVAL '1 millisecond')
+          ELSE ${readAt}
+        END
+        WHERE "inquiryId" = ${inquiryId}::uuid
+          AND "sender" = ${oppositeSender}::"InquiryMessageSender"
+          AND (
+            "readAt" IS NULL
+            OR ("sequence" = 1 AND "readAt" = "createdAt")
+          )
+      `)
+    : await prisma.listingInquiryMessage.updateMany({
+        where: { inquiryId, sender: oppositeSender, readAt: null },
+        data: { readAt },
+      }).then((result) => result.count);
 
-  return { updatedCount: result.count, readAt };
+  return { updatedCount, readAt };
 }
 
 export async function sendInquiryMessage(
@@ -1610,34 +1655,40 @@ export async function getInquiryUnreadSummary(userId: string) {
     };
   }
 
-  const [buyerGroups, sellerGroups] = await Promise.all([
-    prisma.listingInquiryMessage.groupBy({
-      by: ["inquiryId"],
-      where: {
-        sender: InquiryMessageSender.SELLER,
-        readAt: null,
-        inquiry: { buyerId: userId },
-      },
-      _count: { _all: true },
-    }),
-    prisma.listingInquiryMessage.groupBy({
-      by: ["inquiryId"],
-      where: {
-        sender: InquiryMessageSender.BUYER,
-        readAt: null,
-        inquiry: { listing: { sellerId: userId } },
-      },
-      _count: { _all: true },
-    }),
+  const [buyerSummary, sellerSummary] = await Promise.all([
+    prisma.$queryRaw<Array<{ threads: number; messages: number }>>(Prisma.sql`
+      SELECT COUNT(*)::int AS threads, COALESCE(SUM(unread_count), 0)::int AS messages
+      FROM (
+        SELECT m."inquiryId", COUNT(*)::int AS unread_count
+        FROM "listing_inquiry_messages" m
+        JOIN "listing_inquiries" i ON i."id" = m."inquiryId"
+        WHERE i."buyerId" = ${userId}::uuid
+          AND m."sender" = ${InquiryMessageSender.SELLER}::"InquiryMessageSender"
+          AND m."readAt" IS NULL
+        GROUP BY m."inquiryId"
+      ) unread
+    `),
+    prisma.$queryRaw<Array<{ threads: number; messages: number }>>(Prisma.sql`
+      SELECT COUNT(*)::int AS threads, COALESCE(SUM(unread_count), 0)::int AS messages
+      FROM (
+        SELECT m."inquiryId", COUNT(*)::int AS unread_count
+        FROM "listing_inquiry_messages" m
+        JOIN "listing_inquiries" i ON i."id" = m."inquiryId"
+        JOIN "listings" l ON l."id" = i."listingId"
+        WHERE l."sellerId" = ${userId}::uuid
+          AND m."sender" = ${InquiryMessageSender.BUYER}::"InquiryMessageSender"
+          AND (
+            m."readAt" IS NULL
+            OR (m."sequence" = 1 AND m."readAt" = m."createdAt")
+          )
+        GROUP BY m."inquiryId"
+      ) unread
+    `),
   ]);
-  const summarize = (groups: { _count: { _all: number } }[]) => ({
-    threads: groups.length,
-    messages: groups.reduce((total, group) => total + group._count._all, 0),
-  });
 
   return {
-    buyer: summarize(buyerGroups),
-    seller: summarize(sellerGroups),
+    buyer: buyerSummary[0] ?? { threads: 0, messages: 0 },
+    seller: sellerSummary[0] ?? { threads: 0, messages: 0 },
   };
 }
 
