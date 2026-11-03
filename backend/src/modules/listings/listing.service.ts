@@ -4,6 +4,7 @@ import type { Metadata } from "sharp";
 
 import {
   AccountStatus,
+  InquiryMessageSender,
   ListingCondition,
   ListingInquiryStatus,
   ListingStatus,
@@ -12,6 +13,10 @@ import {
 import { Prisma } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
 import { prisma } from "../../lib/prisma.js";
+import {
+  getInquiryPersistenceMode,
+  type InquiryPersistenceMode,
+} from "./inquiry-compatibility.js";
 import { assertBuyerAuthorized } from "../verification/verification.service.js";
 import { isSellerProfileComplete } from "../profile/profile.service.js";
 import {
@@ -1066,7 +1071,6 @@ export async function getBuyerInquiries(
       take: input.pageSize,
       select: {
         id: true,
-        message: true,
         status: true,
         createdAt: true,
         updatedAt: true,
@@ -1088,16 +1092,24 @@ export async function getBuyerInquiries(
     }),
     prisma.listingInquiry.count({ where: { buyerId } }),
   ]);
+  const previews = await getInquiryPreviews(
+    inquiries.map((inquiry) => inquiry.id),
+    InquiryMessageSender.SELLER,
+  );
 
   return {
-    inquiries: inquiries.map((inquiry) => ({
-      id: inquiry.id,
-      message: inquiry.message,
-      status: inquiry.status,
-      createdAt: inquiry.createdAt,
-      updatedAt: inquiry.updatedAt,
-      listing: inquiry.listing,
-    })),
+    inquiries: inquiries.map((inquiry) => {
+      const preview = previews.get(inquiry.id);
+      return {
+        id: inquiry.id,
+        message: preview?.message ?? "",
+        status: inquiry.status,
+        createdAt: inquiry.createdAt,
+        updatedAt: inquiry.updatedAt,
+        unreadMessageCount: preview?.unreadMessageCount ?? 0,
+        listing: inquiry.listing,
+      };
+    }),
     meta: {
       page: input.page,
       pageSize: input.pageSize,
@@ -1137,18 +1149,62 @@ export async function createListingInquiry(
     );
   }
 
-  return prisma.listingInquiry.create({
+  const persistenceMode = await getInquiryPersistenceModeOrUnavailable();
+  if (persistenceMode === "legacy") {
+    const [inquiry] = await prisma.$queryRaw<Array<{
+      message: string;
+      status: ListingInquiryStatus;
+      createdAt: Date;
+    }>>(Prisma.sql`
+      INSERT INTO "listing_inquiries" (
+        "id",
+        "listingId",
+        "buyerId",
+        "message",
+        "updatedAt"
+      )
+      VALUES (
+        gen_random_uuid(),
+        ${listing.id}::uuid,
+        ${buyerId}::uuid,
+        ${message},
+        CURRENT_TIMESTAMP
+      )
+      RETURNING "message", "status", "createdAt"
+    `);
+
+    return inquiry;
+  }
+
+  const inquiry = await prisma.listingInquiry.create({
     data: {
       listingId: listing.id,
       buyerId,
-      message,
+      messages: {
+        create: {
+          sender: InquiryMessageSender.BUYER,
+          content: message,
+          sequence: 1,
+        },
+      },
     },
     select: {
-      message: true,
+      messages: {
+        where: { sender: InquiryMessageSender.BUYER },
+        orderBy: { sequence: "asc" },
+        take: 1,
+        select: { content: true },
+      },
       status: true,
       createdAt: true,
     },
   });
+
+  return {
+    message: inquiry.messages[0]?.content ?? "",
+    status: inquiry.status,
+    createdAt: inquiry.createdAt,
+  };
 }
 
 export async function getListingInquiries(
@@ -1178,7 +1234,6 @@ export async function getListingInquiries(
     orderBy: { createdAt: "asc" },
     select: {
       id: true,
-      message: true,
       status: true,
       createdAt: true,
       updatedAt: true,
@@ -1194,15 +1249,396 @@ export async function getListingInquiries(
       },
     },
   });
+  const previews = await getInquiryPreviews(
+    inquiries.map((inquiry) => inquiry.id),
+    InquiryMessageSender.BUYER,
+  );
 
-  return inquiries.map(({ buyer, ...inquiry }) => ({
-    ...inquiry,
-    buyer: {
-      name: buyer.studentProfile?.displayName ?? "MUT student",
-      verified:
-        buyer.studentProfile?.verificationStatus === "APPROVED",
+  return inquiries.map((inquiry) => {
+    const preview = previews.get(inquiry.id);
+    return {
+      id: inquiry.id,
+      message: preview?.message ?? "",
+      status: inquiry.status,
+      createdAt: inquiry.createdAt,
+      updatedAt: inquiry.updatedAt,
+      unreadMessageCount: preview?.unreadMessageCount ?? 0,
+      buyer: {
+        name: inquiry.buyer.studentProfile?.displayName ?? "MUT student",
+        verified: inquiry.buyer.studentProfile?.verificationStatus === "APPROVED",
+      },
+    };
+  });
+}
+
+const MAX_INQUIRY_MESSAGES_PER_SENDER = 3;
+
+async function getInquiryPersistenceModeOrUnavailable(): Promise<InquiryPersistenceMode> {
+  const [schema] = await prisma.$queryRaw<Array<{
+    hasMessageTable: boolean;
+    hasLegacyMessageColumn: boolean;
+  }>>(Prisma.sql`
+    SELECT
+      to_regclass('listing_inquiry_messages') IS NOT NULL AS "hasMessageTable",
+      EXISTS (
+        SELECT 1
+        FROM pg_attribute
+        WHERE "attrelid" = to_regclass('listing_inquiries')
+          AND "attname" = 'message'
+          AND "attnum" > 0
+          AND NOT "attisdropped"
+      ) AS "hasLegacyMessageColumn"
+  `);
+
+  const mode = schema
+    ? getInquiryPersistenceMode(schema)
+    : "unavailable";
+  if (mode === "unavailable") {
+    throw new AppError(
+      503,
+      "INQUIRY_MESSAGING_UNAVAILABLE",
+      "Inquiry messaging is temporarily unavailable.",
+    );
+  }
+  return mode;
+}
+
+async function getInquiryPreviews(
+  inquiryIds: string[],
+  unreadSender: InquiryMessageSender,
+) {
+  const previews = new Map<string, {
+    message: string;
+    unreadMessageCount: number;
+  }>();
+  if (inquiryIds.length === 0) return previews;
+
+  const persistenceMode = await getInquiryPersistenceModeOrUnavailable();
+  if (persistenceMode === "legacy") {
+    const rows = await prisma.$queryRaw<Array<{
+      id: string;
+      message: string | null;
+    }>>(Prisma.sql`
+      SELECT "id", "message"
+      FROM "listing_inquiries"
+      WHERE "id" IN (${Prisma.join(inquiryIds.map((id) => Prisma.sql`${id}::uuid`))})
+    `);
+    for (const row of rows) {
+      previews.set(row.id, {
+        message: row.message ?? "",
+        unreadMessageCount: 0,
+      });
+    }
+    return previews;
+  }
+
+  const messages = await prisma.listingInquiryMessage.findMany({
+    where: { inquiryId: { in: inquiryIds } },
+    orderBy: [{ inquiryId: "asc" }, { sequence: "asc" }],
+    select: {
+      inquiryId: true,
+      sender: true,
+      content: true,
+      sequence: true,
+      readAt: true,
     },
-  }));
+  });
+
+  for (const message of messages) {
+    const preview = previews.get(message.inquiryId) ?? {
+      message: "",
+      unreadMessageCount: 0,
+    };
+    if (
+      message.sender === InquiryMessageSender.BUYER
+      && message.sequence === 1
+    ) {
+      preview.message = message.content;
+    }
+    if (message.sender === unreadSender && message.readAt === null) {
+      preview.unreadMessageCount += 1;
+    }
+    previews.set(message.inquiryId, preview);
+  }
+
+  return previews;
+}
+
+async function getInquiryAccess(
+  listingId: string,
+  inquiryId: string,
+  userId: string,
+) {
+  const inquiry = await prisma.listingInquiry.findFirst({
+    where: { id: inquiryId, listingId },
+    select: {
+      id: true,
+      buyerId: true,
+      status: true,
+      listing: { select: { sellerId: true } },
+    },
+  });
+
+  if (!inquiry) {
+    throw new AppError(404, "INQUIRY_NOT_FOUND", "Inquiry not found.");
+  }
+
+  if (inquiry.buyerId === userId) {
+    await assertBuyerAuthorized(userId);
+    return { inquiry, viewerRole: InquiryMessageSender.BUYER };
+  }
+
+  if (inquiry.listing.sellerId === userId) {
+    await assertSellerAuthorized(userId);
+    return { inquiry, viewerRole: InquiryMessageSender.SELLER };
+  }
+
+  throw new AppError(404, "INQUIRY_NOT_FOUND", "Inquiry not found.");
+}
+
+export async function getInquiryThread(
+  listingId: string,
+  inquiryId: string,
+  userId: string,
+) {
+  const { inquiry, viewerRole } = await getInquiryAccess(
+    listingId,
+    inquiryId,
+    userId,
+  );
+  const persistenceMode = await getInquiryPersistenceModeOrUnavailable();
+  if (persistenceMode === "legacy") {
+    const [legacyMessage] = await prisma.$queryRaw<Array<{
+      message: string;
+      createdAt: Date;
+    }>>(Prisma.sql`
+      SELECT "message", "createdAt"
+      FROM "listing_inquiries"
+      WHERE "id" = ${inquiryId}::uuid
+    `);
+    const sent = viewerRole === InquiryMessageSender.BUYER ? 1 : 0;
+    return {
+      inquiryId: inquiry.id,
+      status: inquiry.status,
+      viewerRole,
+      messages: legacyMessage
+        ? [{
+            id: inquiry.id,
+            sender: InquiryMessageSender.BUYER,
+            content: legacyMessage.message,
+            sequence: 1,
+            createdAt: legacyMessage.createdAt,
+          }]
+        : [],
+      messageAllowance: {
+        limit: MAX_INQUIRY_MESSAGES_PER_SENDER,
+        sent,
+        remaining: MAX_INQUIRY_MESSAGES_PER_SENDER - sent,
+      },
+      unreadMessageCount: 0,
+    };
+  }
+
+  const messages = await prisma.listingInquiryMessage.findMany({
+    where: { inquiryId },
+    orderBy: { sequence: "asc" },
+    select: {
+      id: true,
+      sender: true,
+      content: true,
+      sequence: true,
+      createdAt: true,
+      readAt: true,
+    },
+  });
+  const sentCount = messages.filter((message) => message.sender === viewerRole).length;
+  const unreadMessageCount = messages.filter(
+    (message) => message.sender !== viewerRole && message.readAt === null,
+  ).length;
+
+  return {
+    inquiryId: inquiry.id,
+    status: inquiry.status,
+    viewerRole,
+    messages: messages.map((message) => ({
+      id: message.id,
+      sender: message.sender,
+      content: message.content,
+      sequence: message.sequence,
+      createdAt: message.createdAt,
+    })),
+    messageAllowance: {
+      limit: MAX_INQUIRY_MESSAGES_PER_SENDER,
+      sent: sentCount,
+      remaining: Math.max(0, MAX_INQUIRY_MESSAGES_PER_SENDER - sentCount),
+    },
+    unreadMessageCount,
+  };
+}
+
+export async function markInquiryMessagesRead(
+  listingId: string,
+  inquiryId: string,
+  userId: string,
+) {
+  const { viewerRole } = await getInquiryAccess(listingId, inquiryId, userId);
+  const persistenceMode = await getInquiryPersistenceModeOrUnavailable();
+  if (persistenceMode === "legacy") {
+    return { updatedCount: 0, readAt: new Date() };
+  }
+
+  const readAt = new Date();
+  const result = await prisma.listingInquiryMessage.updateMany({
+    where: {
+      inquiryId,
+      sender: viewerRole === InquiryMessageSender.BUYER
+        ? InquiryMessageSender.SELLER
+        : InquiryMessageSender.BUYER,
+      readAt: null,
+    },
+    data: { readAt },
+  });
+
+  return { updatedCount: result.count, readAt };
+}
+
+export async function sendInquiryMessage(
+  listingId: string,
+  inquiryId: string,
+  userId: string,
+  content: string,
+) {
+  const { viewerRole } = await getInquiryAccess(listingId, inquiryId, userId);
+  if ((await getInquiryPersistenceModeOrUnavailable()) === "legacy") {
+    throw new AppError(
+      503,
+      "INQUIRY_MESSAGING_UNAVAILABLE",
+      "Inquiry messaging is temporarily unavailable.",
+    );
+  }
+
+  return prisma.$transaction(async (transaction) => {
+    await transaction.$queryRaw<Array<{ id: string }>>(
+      Prisma.sql`SELECT "id" FROM "listing_inquiries" WHERE "id" = ${inquiryId}::uuid FOR UPDATE`,
+    );
+
+    const inquiry = await transaction.listingInquiry.findFirst({
+      where: { id: inquiryId, listingId },
+      select: { id: true, status: true },
+    });
+    if (!inquiry) {
+      throw new AppError(404, "INQUIRY_NOT_FOUND", "Inquiry not found.");
+    }
+    if (inquiry.status === ListingInquiryStatus.CLOSED) {
+      throw new AppError(
+        409,
+        "INQUIRY_CLOSED",
+        "This inquiry is closed and cannot receive new messages.",
+      );
+    }
+
+    const sentCount = await transaction.listingInquiryMessage.count({
+      where: { inquiryId, sender: viewerRole },
+    });
+    if (sentCount >= MAX_INQUIRY_MESSAGES_PER_SENDER) {
+      throw new AppError(
+        409,
+        "INQUIRY_MESSAGE_LIMIT_REACHED",
+        "You have reached the message limit for this inquiry.",
+      );
+    }
+
+    const sequence = await transaction.listingInquiryMessage.count({
+      where: { inquiryId },
+    }) + 1;
+    const message = await transaction.listingInquiryMessage.create({
+      data: {
+        inquiryId,
+        sender: viewerRole,
+        content,
+        sequence,
+      },
+      select: {
+        id: true,
+        sender: true,
+        content: true,
+        sequence: true,
+        createdAt: true,
+        readAt: true,
+      },
+    });
+
+    let status = inquiry.status;
+    if (
+      viewerRole === InquiryMessageSender.SELLER
+      && inquiry.status === ListingInquiryStatus.OPEN
+    ) {
+      const transitioned = await transaction.listingInquiry.updateMany({
+        where: { id: inquiryId, status: ListingInquiryStatus.OPEN },
+        data: {
+          status: ListingInquiryStatus.RESPONDED,
+          updatedAt: new Date(),
+        },
+      });
+      if (transitioned.count !== 1) {
+        throw new AppError(
+          409,
+          "INVALID_INQUIRY_STATUS",
+          "The inquiry status changed before the message could be sent.",
+        );
+      }
+      status = ListingInquiryStatus.RESPONDED;
+    }
+
+    return {
+      message,
+      status,
+      messageAllowance: {
+        limit: MAX_INQUIRY_MESSAGES_PER_SENDER,
+        sent: sentCount + 1,
+        remaining: MAX_INQUIRY_MESSAGES_PER_SENDER - sentCount - 1,
+      },
+    };
+  });
+}
+
+export async function getInquiryUnreadSummary(userId: string) {
+  if ((await getInquiryPersistenceModeOrUnavailable()) === "legacy") {
+    return {
+      buyer: { threads: 0, messages: 0 },
+      seller: { threads: 0, messages: 0 },
+    };
+  }
+
+  const [buyerGroups, sellerGroups] = await Promise.all([
+    prisma.listingInquiryMessage.groupBy({
+      by: ["inquiryId"],
+      where: {
+        sender: InquiryMessageSender.SELLER,
+        readAt: null,
+        inquiry: { buyerId: userId },
+      },
+      _count: { _all: true },
+    }),
+    prisma.listingInquiryMessage.groupBy({
+      by: ["inquiryId"],
+      where: {
+        sender: InquiryMessageSender.BUYER,
+        readAt: null,
+        inquiry: { listing: { sellerId: userId } },
+      },
+      _count: { _all: true },
+    }),
+  ]);
+  const summarize = (groups: { _count: { _all: number } }[]) => ({
+    threads: groups.length,
+    messages: groups.reduce((total, group) => total + group._count._all, 0),
+  });
+
+  return {
+    buyer: summarize(buyerGroups),
+    seller: summarize(sellerGroups),
+  };
 }
 
 export async function updateInquiryStatus(

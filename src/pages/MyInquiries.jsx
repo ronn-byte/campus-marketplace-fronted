@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import InquiryConversation from "../components/InquiryConversation";
 import { useAuth } from "../hooks/useAuth";
 import { getApiErrorMessage } from "../services/apiClient";
-import { getMyInquiries } from "../services/listingService";
+import { getInquiryUnreadSummary, getMyInquiries } from "../services/listingService";
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -24,6 +25,9 @@ export default function MyInquiries() {
   const [page, setPage] = useState(1);
   const [result, setResult] = useState({ status: "idle", items: [], meta: null });
   const [errorMessage, setErrorMessage] = useState("");
+  const [unreadSummary, setUnreadSummary] = useState(null);
+  const [summaryError, setSummaryError] = useState("");
+  const [expandedInquiryId, setExpandedInquiryId] = useState(null);
 
   const loadInquiries = useCallback(async (requestedPage = page) => {
     setResult((current) => ({ ...current, status: "loading" }));
@@ -37,9 +41,31 @@ export default function MyInquiries() {
     }
   }, [page]);
 
+  const loadUnreadSummary = useCallback(async () => {
+    try {
+      setUnreadSummary(await getInquiryUnreadSummary());
+      setSummaryError("");
+    } catch (error) {
+      setSummaryError(getApiErrorMessage(error));
+    }
+  }, []);
+
+  const handleThreadUpdated = useCallback(async ({ inquiryId, status, unreadMessageCount }) => {
+    setResult((current) => ({
+      ...current,
+      items: current.items.map((inquiry) => inquiry.id === inquiryId
+        ? { ...inquiry, status, unreadMessageCount }
+        : inquiry),
+    }));
+    await loadUnreadSummary();
+  }, [loadUnreadSummary]);
+
   useEffect(() => {
-    if (!isAuthLoading && isAuthenticated) loadInquiries(page);
-  }, [isAuthLoading, isAuthenticated, loadInquiries, page]);
+    if (!isAuthLoading && isAuthenticated) {
+      loadInquiries(page);
+      loadUnreadSummary();
+    }
+  }, [isAuthLoading, isAuthenticated, loadInquiries, loadUnreadSummary, page]);
 
   if (isAuthLoading) {
     return <div className="page-shell"><p className="muted" role="status">Checking your sign-in status…</p></div>;
@@ -68,6 +94,12 @@ export default function MyInquiries() {
         </div>
         <Link to="/" className="button button--small">Explore listings</Link>
       </div>
+      {unreadSummary && (
+        <p className="workspace-unread-summary" role="status">
+          <strong>Unread seller replies:</strong> {unreadSummary.buyer.threads} conversation{unreadSummary.buyer.threads === 1 ? "" : "s"} · {unreadSummary.buyer.messages} message{unreadSummary.buyer.messages === 1 ? "" : "s"}
+        </p>
+      )}
+      {summaryError && <p className="form-alert" role="alert">Unread counts could not be refreshed: {summaryError}</p>}
       {errorMessage && <p className="form-alert" role="alert">{errorMessage}</p>}
       {result.status === "loading" && <p className="muted" role="status">Loading your inquiries…</p>}
       {result.status === "error" && (
@@ -101,12 +133,35 @@ export default function MyInquiries() {
                     </div>
                     <p className="muted">Sent {formatDate(inquiry.createdAt)}</p>
                     <p className="workspace-inquiry__message">{inquiry.message}</p>
+
                     {listing?.status === "SOLD" || listing?.status === "REMOVED" ? (
                       <p className="workspace-unavailable" role="status">This listing is {listing.status.toLowerCase()}; your inquiry history is still available.</p>
                     ) : isAvailable ? (
                       <Link className="text-link" to={`/listing/${encodeURIComponent(listing.id)}`}>View listing</Link>
                     ) : (
                       <p className="workspace-unavailable" role="status">This listing is not currently available to view.</p>
+                    )}
+                    <div className="workspace-actions workspace-inquiry__conversation-action">
+                      <button
+                        className="button button--secondary"
+                        type="button"
+                        aria-expanded={expandedInquiryId === inquiry.id}
+                        onClick={() => setExpandedInquiryId((current) => current === inquiry.id ? null : inquiry.id)}
+                      >
+                        {expandedInquiryId === inquiry.id ? "Hide conversation" : "Open conversation"}
+                      </button>
+                      {inquiry.unreadMessageCount > 0 && (
+                        <span className="workspace-unread-badge" aria-label={`${inquiry.unreadMessageCount} unread messages`}>
+                          {inquiry.unreadMessageCount} unread
+                        </span>
+                      )}
+                    </div>
+                    {expandedInquiryId === inquiry.id && listing?.id && (
+                      <InquiryConversation
+                        listingId={listing.id}
+                        inquiryId={inquiry.id}
+                        onThreadUpdated={handleThreadUpdated}
+                      />
                     )}
                   </div>
                 </article>

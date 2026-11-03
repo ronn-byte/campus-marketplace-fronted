@@ -1,5 +1,46 @@
 ﻿import apiClient from "./apiClient";
 
+export const INQUIRY_UNREAD_SUMMARY_UPDATED_EVENT = "inquiry-unread-summary-updated";
+
+export function getUnreadInquiryCounts(summary) {
+  const count = (value) => Number.isSafeInteger(value) && value > 0 ? value : 0;
+  return {
+    threads: count(summary?.buyer?.threads) + count(summary?.seller?.threads),
+    messages: count(summary?.buyer?.messages) + count(summary?.seller?.messages),
+  };
+}
+
+export function subscribeToInquiryUnreadSummary(isAuthenticated, onSummary) {
+  let active = true;
+  let requestSequence = 0;
+
+  if (!isAuthenticated) {
+    onSummary(null);
+    return () => {
+      active = false;
+      requestSequence += 1;
+    };
+  }
+
+  const refresh = async () => {
+    const sequence = ++requestSequence;
+    try {
+      const summary = await getInquiryUnreadSummary();
+      if (active && sequence === requestSequence) onSummary(summary);
+    } catch {
+      if (active && sequence === requestSequence) onSummary(null);
+    }
+  };
+
+  void refresh();
+  window.addEventListener(INQUIRY_UNREAD_SUMMARY_UPDATED_EVENT, refresh);
+  return () => {
+    active = false;
+    requestSequence += 1;
+    window.removeEventListener(INQUIRY_UNREAD_SUMMARY_UPDATED_EVENT, refresh);
+  };
+}
+
 export const previewListings = [
   {
     id: "preview-textbook",
@@ -223,6 +264,45 @@ export async function getListingInquiries(listingId) {
     throw new Error("The inquiry response was invalid.");
   }
   return data.inquiries;
+}
+
+export async function getInquiryMessages(listingId, inquiryId) {
+  const { data } = await apiClient.get(
+    `/listings/${encodeURIComponent(listingId)}/inquiries/${encodeURIComponent(inquiryId)}/messages`,
+  );
+  if (!Array.isArray(data?.thread?.messages)) {
+    throw new Error("The inquiry conversation response was invalid.");
+  }
+  return data.thread;
+}
+
+export async function sendInquiryMessage(listingId, inquiryId, content) {
+  const { data } = await apiClient.post(
+    `/listings/${encodeURIComponent(listingId)}/inquiries/${encodeURIComponent(inquiryId)}/messages`,
+    { content },
+  );
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(INQUIRY_UNREAD_SUMMARY_UPDATED_EVENT));
+  }
+  return data;
+}
+
+export async function markInquiryMessagesRead(listingId, inquiryId) {
+  const { data } = await apiClient.post(
+    `/listings/${encodeURIComponent(listingId)}/inquiries/${encodeURIComponent(inquiryId)}/read`,
+  );
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(new Event(INQUIRY_UNREAD_SUMMARY_UPDATED_EVENT));
+  }
+  return data;
+}
+
+export async function getInquiryUnreadSummary() {
+  const { data } = await apiClient.get("/inquiries/unread-summary");
+  if (!data?.summary?.buyer || !data?.summary?.seller) {
+    throw new Error("The inquiry unread summary response was invalid.");
+  }
+  return data.summary;
 }
 
 export async function updateListingInquiryStatus(listingId, inquiryId, status) {

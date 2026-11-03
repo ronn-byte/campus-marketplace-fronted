@@ -4,6 +4,7 @@ import { z } from "zod";
 import { AppError } from "../../app/errors.js";
 import { optionalAuth, requireAuth } from "../../middleware/auth.js";
 import {
+  createInquiryMessageSchema,
   createListingInquirySchema,
   createListingSchema,
   listingInquiryParamsSchema,
@@ -23,6 +24,8 @@ import {
   createListingInquiry,
   createListing,
   getBuyerInquiries,
+  getInquiryThread,
+  getInquiryUnreadSummary,
   getListingCategories,
   getListingInquiries,
   getPublicListing,
@@ -36,6 +39,8 @@ import {
   removeListing,
   updateInquiryStatus,
   updateListing,
+  markInquiryMessagesRead,
+  sendInquiryMessage,
 } from "./listing.service.js";
 
 export async function registerListingRoutes(app: FastifyInstance) {
@@ -119,6 +124,20 @@ export async function registerListingRoutes(app: FastifyInstance) {
 
       const inquiries = await getBuyerInquiries(user.id, result.data);
       return reply.status(200).send(inquiries);
+    },
+  );
+
+  app.get(
+    "/inquiries/unread-summary",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const user = request.user;
+      if (!user) {
+        throw new AppError(401, "UNAUTHENTICATED", "Authentication is required.");
+      }
+
+      const summary = await getInquiryUnreadSummary(user.id);
+      return reply.status(200).send({ summary });
     },
   );
 
@@ -350,6 +369,77 @@ export async function registerListingRoutes(app: FastifyInstance) {
       );
 
       return reply.status(200).send({ inquiries });
+    },
+  );
+
+  app.get(
+    "/listings/:listingId/inquiries/:inquiryId/messages",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingInquiryParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing or inquiry ID is invalid.");
+      }
+      const user = request.user;
+      if (!user) {
+        throw new AppError(401, "UNAUTHENTICATED", "Authentication is required.");
+      }
+
+      const thread = await getInquiryThread(
+        params.data.listingId,
+        params.data.inquiryId,
+        user.id,
+      );
+      return reply.status(200).send({ thread });
+    },
+  );
+
+  app.post(
+    "/listings/:listingId/inquiries/:inquiryId/messages",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingInquiryParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing or inquiry ID is invalid.");
+      }
+      const result = createInquiryMessageSchema.safeParse(request.body);
+      if (!result.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "Please check the submitted message.");
+      }
+      const user = request.user;
+      if (!user) {
+        throw new AppError(401, "UNAUTHENTICATED", "Authentication is required.");
+      }
+
+      const sent = await sendInquiryMessage(
+        params.data.listingId,
+        params.data.inquiryId,
+        user.id,
+        result.data.content,
+      );
+      return reply.status(201).send(sent);
+    },
+  );
+
+  app.post(
+    "/listings/:listingId/inquiries/:inquiryId/read",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const params = listingInquiryParamsSchema.safeParse(request.params);
+      if (!params.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "The listing or inquiry ID is invalid.");
+      }
+      const user = request.user;
+      if (!user) {
+        throw new AppError(401, "UNAUTHENTICATED", "Authentication is required.");
+      }
+
+      const result = await markInquiryMessagesRead(
+        params.data.listingId,
+        params.data.inquiryId,
+        user.id,
+      );
+      return reply.status(200).send(result);
     },
   );
 

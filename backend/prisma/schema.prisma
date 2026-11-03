@@ -199,16 +199,32 @@ model ListingInquiry {
   id        String               @id @default(uuid()) @db.Uuid
   listingId String               @db.Uuid
   buyerId   String               @db.Uuid
-  message   String               @db.VarChar(2000)
   status    ListingInquiryStatus @default(OPEN)
   createdAt DateTime             @default(now()) @db.Timestamptz(3)
   updatedAt DateTime             @updatedAt @db.Timestamptz(3)
   buyer     User                 @relation(fields: [buyerId], references: [id])
   listing   Listing              @relation(fields: [listingId], references: [id])
+  messages  ListingInquiryMessage[]
 
   @@index([listingId, status, createdAt])
   @@index([buyerId, status, createdAt])
   @@map("listing_inquiries")
+}
+
+model ListingInquiryMessage {
+  id        String                @id @default(uuid()) @db.Uuid
+  inquiryId String                @db.Uuid
+  sender    InquiryMessageSender
+  content   String                @db.VarChar(2000)
+  sequence  Int
+  readAt    DateTime?             @db.Timestamptz(3)
+  createdAt DateTime              @default(now()) @db.Timestamptz(3)
+  inquiry   ListingInquiry        @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+
+  @@unique([inquiryId, sequence])
+  @@index([inquiryId, sender, readAt])
+  @@index([sender, readAt, inquiryId])
+  @@map("listing_inquiry_messages")
 }
 
 enum Role {
@@ -268,4 +284,9 @@ enum ListingInquiryStatus {
   OPEN
   RESPONDED
   CLOSED
+}
+
+enum InquiryMessageSender {
+  BUYER
+  SELLER
 }

@@ -76,6 +76,10 @@ export const createListingInquirySchema = z.object({
   message: z.string().trim().min(1).max(2000),
 }).strict();
 
+export const createInquiryMessageSchema = z.object({
+  content: z.string().trim().min(1).max(2000),
+}).strict();
+
 export const listingInquiryParamsSchema = z.object({
   listingId: z.string().uuid(),
   inquiryId: z.string().uuid(),

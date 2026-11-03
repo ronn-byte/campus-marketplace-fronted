@@ -108,7 +108,9 @@ export default function ListingDetails() {
           ) : isAuthenticated ? (
             <form onSubmit={handleInquirySubmit}>
               {inquiryState.status === "success" && (
-                <p className="preview-note" role="status">{inquiryState.message}</p>
+                <p className="preview-note" role="status">
+                  {inquiryState.message} <Link className="text-link" to="/my-inquiries">View your conversation</Link>
+                </p>
               )}
               {inquiryState.status === "error" && (
                 <p className="form-alert" role="alert">{inquiryState.message}</p>

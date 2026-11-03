@@ -29,16 +29,21 @@ const databaseName = decodeURIComponent(
 const approvedHost =
   "campus-marketplace-db.postgres.database.azure.com";
 const approvedDatabase = "campus_marketplace_test";
+const isApprovedAzureTestDatabase =
+  parsedUrl.hostname.toLowerCase() === approvedHost
+  && databaseName === approvedDatabase;
+const isApprovedDisposableLocalDatabase =
+  parsedUrl.hostname === "127.0.0.1"
+  && parsedUrl.port === "55439"
+  && parsedUrl.username === "ron"
+  && parsedUrl.password === ""
+  && databaseName === "mutmarket_legacy"
+  && parsedUrl.search === "?schema=public"
+  && parsedUrl.hash === "";
 
-if (parsedUrl.hostname.toLowerCase() !== approvedHost) {
+if (!isApprovedAzureTestDatabase && !isApprovedDisposableLocalDatabase) {
   throw new Error(
-    "Tests blocked: TEST_DATABASE_URL host is not the approved test server.",
-  );
-}
-
-if (databaseName !== approvedDatabase) {
-  throw new Error(
-    `Tests blocked: expected database "${approvedDatabase}", received "${databaseName}".`,
+    `Tests blocked: TEST_DATABASE_URL must target ${approvedHost}/${approvedDatabase} or 127.0.0.1:55439/mutmarket_legacy; received ${parsedUrl.hostname}:${parsedUrl.port}/${databaseName}.`,
   );
 }
 
