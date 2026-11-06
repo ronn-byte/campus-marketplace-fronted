@@ -1,6 +1,8 @@
-import { prisma } from "../../lib/prisma.js";
-import { AccountStatus } from "@prisma/client";
+import { AccountStatus, InquiryMessageSender } from "@prisma/client";
 import { AppError } from "../../app/errors.js";
+import { prisma } from "../../lib/prisma.js";
+import { getInquiryAccess } from "../listings/inquiry-access.service.js";
+import { getProfileContactAccess, getVisibleProfileContactFields } from "./profile-contact-access.js";
 
 export type ProfilePayload = {
   id: string;
@@ -9,6 +11,8 @@ export type ProfilePayload = {
   nickname: string | null;
   phoneNumber: string | null;
   whatsappNumber: string | null;
+  sellerPublicPhoneNumber: string | null;
+  sellerPublicWhatsappNumber: string | null;
   yearOfStudy: number | null;
   course: string | null;
   bio: string | null;
@@ -44,6 +48,8 @@ export async function getCurrentProfile(userId: string): Promise<ProfilePayload>
     nickname: profile?.nickname ?? null,
     phoneNumber: profile?.phoneNumber ?? null,
     whatsappNumber: profile?.whatsappNumber ?? null,
+    sellerPublicPhoneNumber: profile?.sellerPublicPhoneNumber ?? null,
+    sellerPublicWhatsappNumber: profile?.sellerPublicWhatsappNumber ?? null,
     yearOfStudy: profile?.yearOfStudy ?? null,
     course: profile?.course ?? null,
     bio: profile?.bio ?? null,
@@ -66,7 +72,12 @@ export async function updateCurrentProfile(userId: string, input: Record<string,
   return getCurrentProfile(userId);
 }
 
-export async function getPublicSellerProfile(userId: string, includeContactDetails = false) {
+export async function getPublicSellerProfile(
+  userId: string,
+  includeContactDetails = false,
+  viewerId?: string,
+  inquiryId?: string,
+) {
   const user = await prisma.user.findFirst({
     where: {
       id: userId,
@@ -74,16 +85,53 @@ export async function getPublicSellerProfile(userId: string, includeContactDetai
       emailVerifiedAt: { not: null },
     },
     select: {
-      profile: { select: { nickname: true, phoneNumber: true, whatsappNumber: true, bio: true, avatarUrl: true } },
+      profile: { select: {
+        nickname: true,
+        course: true,
+        phoneNumber: true,
+        whatsappNumber: true,
+        sellerPublicPhoneNumber: true,
+        sellerPublicWhatsappNumber: true,
+        bio: true,
+        avatarUrl: true,
+      } },
       studentProfile: { select: { displayName: true } },
+      // Persisted listing ownership, including retained sold/removed listings,
+      // is the available evidence that this user has acted as a seller.
+      listings: { take: 1, select: { id: true } },
     },
   });
   if (!user) throw new AppError(404, "SELLER_NOT_FOUND", "This seller profile is unavailable.");
+
+  let inquiryViewerRole: InquiryMessageSender | undefined;
+  let inquiryBuyerMatchesProfile = false;
+  if (inquiryId && includeContactDetails && viewerId) {
+    try {
+      const { inquiry, viewerRole } = await getInquiryAccess(undefined, inquiryId, viewerId);
+      inquiryViewerRole = viewerRole;
+      inquiryBuyerMatchesProfile = inquiry.buyerId === userId;
+    } catch (error) {
+      if (!(error instanceof AppError)) throw error;
+    }
+  }
+  const contactAccess = getProfileContactAccess({
+    isAuthenticated: includeContactDetails,
+    targetOwnsListing: user.listings.length > 0,
+    hasInquiryId: Boolean(inquiryId),
+    inquiryViewerRole,
+    inquiryBuyerMatchesProfile,
+  });
+  const contactFields = getVisibleProfileContactFields(contactAccess, {
+    sellerPublicPhoneNumber: user.profile?.sellerPublicPhoneNumber ?? null,
+    sellerPublicWhatsappNumber: user.profile?.sellerPublicWhatsappNumber ?? null,
+    buyerPrivatePhoneNumber: user.profile?.phoneNumber ?? null,
+    buyerPrivateWhatsappNumber: user.profile?.whatsappNumber ?? null,
+  });
+
   return {
     name: user.profile?.nickname || user.studentProfile?.displayName || "MUT Market seller",
     avatarUrl: user.profile?.avatarUrl ?? null,
     description: user.profile?.bio ?? null,
-    phoneNumber: includeContactDetails ? (user.profile?.phoneNumber ?? null) : null,
-    whatsappNumber: includeContactDetails ? (user.profile?.whatsappNumber ?? null) : null,
+    ...contactFields,
   };
 }

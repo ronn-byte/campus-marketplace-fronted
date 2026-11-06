@@ -61,7 +61,12 @@ async function createActor(options: ActorOptions = {}) {
       emailVerifiedAt: options.emailVerified === false ? null : new Date(),
       ...(options.profileComplete === false
         ? {}
-        : { profile: { create: { nickname: "Phase 2 Seller", course: "Computer Science" } } }),
+        : { profile: { create: {
+          nickname: "Phase 2 Seller",
+          course: "Computer Science",
+          sellerPublicPhoneNumber: "+254711111111",
+          sellerPublicWhatsappNumber: "+254722222222",
+        } } }),
     },
   });
   actorIds.push(user.id);
@@ -342,6 +347,52 @@ test("email verification and account eligibility govern seller authorization", a
       assert.equal(publicKeys.includes(forbiddenField), false);
     }
   });
+});
+
+test("publishing requires both seller-public contacts and retries the same saved draft", async () => {
+  for (const missing of ["sellerPublicPhoneNumber", "sellerPublicWhatsappNumber", "both"] as const) {
+    const actor = await createActor();
+    const created = await app.inject({
+      method: "POST",
+      url: "/api/v1/listings",
+      headers: authHeaders(actor.sessionToken),
+      payload: createListingPayload(),
+    });
+    assert.equal(created.statusCode, 201);
+    const listingId = created.json().listing.id as string;
+    await createReadyListingImage(listingId);
+
+    await prisma.profile.update({
+      where: { userId: actor.user.id },
+      data: {
+        ...(missing === "sellerPublicPhoneNumber" || missing === "both" ? { sellerPublicPhoneNumber: null } : {}),
+        ...(missing === "sellerPublicWhatsappNumber" || missing === "both" ? { sellerPublicWhatsappNumber: null } : {}),
+      },
+    });
+
+    const rejected = await app.inject({
+      method: "POST",
+      url: `/api/v1/listings/${listingId}/publish`,
+      headers: authHeaders(actor.sessionToken),
+    });
+    assert.equal(rejected.statusCode, 422);
+    assert.equal(rejected.json().error.code, "SELLER_CONTACT_INCOMPLETE");
+    assert.equal((await prisma.listing.findUniqueOrThrow({ where: { id: listingId } })).status, ListingStatus.DRAFT);
+    assert.equal(await prisma.listingImage.count({ where: { listingId, removedAt: null } }), 1);
+
+    await prisma.profile.update({
+      where: { userId: actor.user.id },
+      data: { sellerPublicPhoneNumber: "+254711111111", sellerPublicWhatsappNumber: "+254722222222" },
+    });
+    const retry = await app.inject({
+      method: "POST",
+      url: `/api/v1/listings/${listingId}/publish`,
+      headers: authHeaders(actor.sessionToken),
+    });
+    assert.equal(retry.statusCode, 200);
+    assert.equal(retry.json().listing.id, listingId);
+    assert.equal(retry.json().listing.status, ListingStatus.PUBLISHED);
+  }
 });
 
 test("verification status distinguishes an account with no student verification request", async () => {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import apiClient from "./apiClient.js";
 import {
+  getInquiryInbox,
   getUnreadInquiryCounts,
   INQUIRY_UNREAD_SUMMARY_UPDATED_EVENT,
   markInquiryMessagesRead,
@@ -42,6 +43,25 @@ test("unread navbar count combines distinct buyer and seller threads", () => {
 
 test("unread navbar count safely handles no summary", () => {
   assert.deepEqual(getUnreadInquiryCounts(null), { threads: 0, messages: 0 });
+});
+
+test("unified inbox requests preserve filters and cursor pagination", async () => {
+  const previousGet = apiClient.get;
+  let request;
+  apiClient.get = async (url, options) => {
+    request = { url, params: options.params };
+    return { data: { items: [{ id: "inquiry-1" }], page: { pageSize: 10, hasMore: true, nextCursor: "next-page" } } };
+  };
+  try {
+    const page = await getInquiryInbox({ filter: "selling", pageSize: 10, cursor: "cursor-1", listingId: "listing-1", inquiryId: "inquiry-1" });
+    assert.deepEqual(request, {
+      url: "/inquiries/inbox",
+      params: { filter: "selling", pageSize: 10, cursor: "cursor-1", listingId: "listing-1", inquiryId: "inquiry-1" },
+    });
+    assert.deepEqual(page, { items: [{ id: "inquiry-1" }], page: { pageSize: 10, hasMore: true, nextCursor: "next-page" } });
+  } finally {
+    apiClient.get = previousGet;
+  }
 });
 
 test("logged-out Navbar subscription clears counts without requesting a summary", () => {

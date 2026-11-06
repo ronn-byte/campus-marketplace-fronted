@@ -256,6 +256,21 @@ export async function getMyInquiries(params = {}) {
   };
 }
 
+export async function getInquiryInbox(params = {}) {
+  const { data } = await apiClient.get("/inquiries/inbox", { params });
+  if (!Array.isArray(data?.items) || !data?.page) {
+    throw new Error("The inquiry inbox response was invalid.");
+  }
+  return {
+    items: data.items,
+    page: {
+      pageSize: Number(data.page.pageSize) || 20,
+      hasMore: data.page.hasMore === true,
+      nextCursor: typeof data.page.nextCursor === "string" ? data.page.nextCursor : null,
+    },
+  };
+}
+
 export async function getListingInquiries(listingId) {
   const { data } = await apiClient.get(
     `/listings/${encodeURIComponent(listingId)}/inquiries`,

@@ -108,7 +108,7 @@ async function createTestInquiry(input: {
       sender: "BUYER",
       content: input.message,
       sequence: 1,
-      readAt: inquiry.createdAt,
+      readAt: null,
     },
   });
   return inquiry;
@@ -439,6 +439,7 @@ test("listing inquiry retrieval is authenticated, owner-only, and returns safe b
       "name",
       "verified",
     ]);
+    assert.equal(body.inquiries[0].buyer.id, buyer.user.id);
     assert.equal(body.inquiries[0].buyer.name, "Inquiry Test Student");
     assert.equal(body.inquiries[0].buyer.verified, false);
 
@@ -497,6 +498,7 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
   const sellerB = await createActor({ verificationStatus: VerificationStatus.APPROVED });
   const buyerA = await createActor({ verificationStatus: VerificationStatus.APPROVED });
   const buyerB = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const sellerBInquiryBuyer = await createActor({ verificationStatus: VerificationStatus.APPROVED });
   const administratorBuyer = await createActor({ role: Role.ADMINISTRATOR });
   const unconfirmedBuyer = await createActor({ emailVerified: false });
 
@@ -505,7 +507,7 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
   await createListing(sellerA.user.id, ListingStatus.RESERVED);
   const sold = await createListing(sellerA.user.id, ListingStatus.SOLD);
   await createListing(sellerA.user.id, ListingStatus.SUSPENDED);
-  await createListing(sellerA.user.id, ListingStatus.REMOVED);
+  const removed = await createListing(sellerA.user.id, ListingStatus.REMOVED);
 
   const firstPublishedInquiry = await createTestInquiry({
     listingId: published.id,
@@ -543,6 +545,12 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
     buyerId: administratorBuyer.user.id,
     message: "Administrator-role buyer inquiry.",
   });
+  const sellerBListing = await createListing(sellerB.user.id, ListingStatus.PUBLISHED);
+  await createTestInquiry({
+    listingId: sellerBListing.id,
+    buyerId: sellerBInquiryBuyer.user.id,
+    message: "Inquiry owned by a different seller.",
+  });
 
   await t.test("seller listing retrieval is authenticated and scoped to request.user.id", async () => {
     const unauthenticated = await app.inject({ method: "GET", url: "/api/v1/listings/me" });
@@ -565,6 +573,16 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
       headers: authHeaders(sellerA.sessionToken),
     });
     assert.equal(listingCounts.statusCode, 200);
+    assert.equal(listingCounts.json().meta.total, 5);
+    assert.deepEqual(listingCounts.json().meta.statusCounts, {
+      all: 5,
+      active: 1,
+      drafts: 1,
+      reserved: 1,
+      archive: 1,
+      sold: 1,
+      other: 1,
+    });
     const listingCountsById = new Map<string, number>(
       listingCounts.json().items.map((item: { id: string; inquiryCount: number }) => [
         item.id,
@@ -574,6 +592,25 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
     assert.equal(listingCountsById.get(published.id), 2);
     assert.equal(listingCountsById.get(sold.id), 1);
     assert.equal(listingCountsById.get(draft.id), 0);
+    const listingMetricsById = new Map<string, { inquiryCount: number; unreadInquiryCount: number }>(
+      listingCounts.json().items.map((item: { id: string; inquiryCount: number; unreadInquiryCount: number }) => [
+        item.id,
+        { inquiryCount: item.inquiryCount, unreadInquiryCount: item.unreadInquiryCount },
+      ] as const),
+    );
+    assert.deepEqual(listingMetricsById.get(published.id), { inquiryCount: 2, unreadInquiryCount: 2 });
+    assert.deepEqual(listingMetricsById.get(sold.id), { inquiryCount: 1, unreadInquiryCount: 1 });
+    assert.equal(listingCounts.json().items.some((item: { id: string }) => item.id === sellerBListing.id), false);
+
+    const removedListings = await app.inject({
+      method: "GET",
+      url: "/api/v1/listings/me?page=1&pageSize=10&status=REMOVED",
+      headers: authHeaders(sellerA.sessionToken),
+    });
+    assert.equal(removedListings.statusCode, 200);
+    assert.deepEqual(removedListings.json().items.map((item: { id: string }) => item.id), [
+      removed.id,
+    ]);
     assert.equal(
       Object.keys(listingCounts.json().items.find((item: { id: string }) => item.id === published.id) ?? {})
         .includes("inquiries"),
@@ -754,6 +791,93 @@ test("seller inquiry status transitions and lifecycle interactions are enforced"
       assert.ok(sellerResponse.json().inquiries.some((inquiry: { id: string }) => inquiry.id === lifecycleInquiry.id));
     }
   });
+});
+
+test("unified inquiry inbox requires authentication and scopes filters and cursors to participants", async () => {
+  const seller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const buyer = await createActor();
+  const unrelatedActor = await createActor();
+  const listing = await createListing(seller.user.id);
+  const inquiry = await createTestInquiry({ listingId: listing.id, buyerId: buyer.user.id, message: "Inbox initial message." });
+  await prisma.listingInquiryMessage.create({
+    data: { inquiryId: inquiry.id, sender: "SELLER", content: "Inbox seller reply.", sequence: 2 },
+  });
+
+  const unauthenticated = await app.inject({ method: "GET", url: "/api/v1/inquiries/inbox" });
+  assert.equal(unauthenticated.statusCode, 401);
+
+  const buying = await app.inject({
+    method: "GET", url: "/api/v1/inquiries/inbox?filter=buying&pageSize=1",
+    headers: authHeaders(buyer.sessionToken),
+  });
+  assert.equal(buying.statusCode, 200);
+  assert.equal(buying.json().items.length, 1);
+  assert.equal(buying.json().items[0].context, "BUYING");
+  assert.equal(buying.json().items[0].unreadMessageCount, 1);
+  assert.equal(buying.json().items[0].listing.id, listing.id);
+  assert.equal(buying.json().items[0].otherParticipant.displayName, "Inquiry Test Student");
+  assert.equal(Object.hasOwn(buying.json().items[0].listing, "images"), false);
+  assert.equal(buying.json().items[0].otherParticipant.phone, undefined);
+
+  const directInquiry = await app.inject({
+    method: "GET", url: `/api/v1/inquiries/inbox?filter=buying&inquiryId=${inquiry.id}`,
+    headers: authHeaders(buyer.sessionToken),
+  });
+  assert.equal(directInquiry.statusCode, 200);
+  assert.deepEqual(directInquiry.json().items.map((item: { id: string }) => item.id), [inquiry.id]);
+
+  const selling = await app.inject({
+    method: "GET", url: `/api/v1/inquiries/inbox?filter=selling&listingId=${listing.id}`,
+    headers: authHeaders(seller.sessionToken),
+  });
+  assert.equal(selling.statusCode, 200);
+  assert.equal(selling.json().items.length, 1);
+  assert.equal(selling.json().items[0].context, "SELLING");
+  assert.equal(selling.json().items[0].unreadMessageCount, 1);
+
+  const unread = await app.inject({
+    method: "GET", url: "/api/v1/inquiries/inbox?filter=unread",
+    headers: authHeaders(buyer.sessionToken),
+  });
+  assert.equal(unread.statusCode, 200);
+  assert.deepEqual(unread.json().items.map((item: { id: string }) => item.id), [inquiry.id]);
+
+  const unrelatedResult = await app.inject({
+    method: "GET", url: `/api/v1/inquiries/inbox?filter=selling&listingId=${listing.id}`,
+    headers: authHeaders(unrelatedActor.sessionToken),
+  });
+  assert.equal(unrelatedResult.statusCode, 200);
+  assert.equal(unrelatedResult.json().items.length, 0);
+  const unrelatedDirectInquiry = await app.inject({
+    method: "GET", url: `/api/v1/inquiries/inbox?inquiryId=${inquiry.id}`,
+    headers: authHeaders(unrelatedActor.sessionToken),
+  });
+  assert.equal(unrelatedDirectInquiry.statusCode, 200);
+  assert.equal(unrelatedDirectInquiry.json().items.length, 0);
+
+  const invalidFilter = await app.inject({
+    method: "GET", url: "/api/v1/inquiries/inbox?filter=administrator",
+    headers: authHeaders(buyer.sessionToken),
+  });
+  assert.equal(invalidFilter.statusCode, 422);
+
+  const secondListing = await createListing(seller.user.id);
+  await createTestInquiry({ listingId: secondListing.id, buyerId: buyer.user.id, message: "Second inbox message." });
+  const firstPage = await app.inject({
+    method: "GET", url: "/api/v1/inquiries/inbox?filter=buying&pageSize=1",
+    headers: authHeaders(buyer.sessionToken),
+  });
+  assert.equal(firstPage.statusCode, 200);
+  assert.equal(firstPage.json().items.length, 1);
+  assert.equal(firstPage.json().page.hasMore, true);
+  assert.equal(typeof firstPage.json().page.nextCursor, "string");
+  const secondPage = await app.inject({
+    method: "GET", url: `/api/v1/inquiries/inbox?filter=buying&pageSize=1&cursor=${encodeURIComponent(firstPage.json().page.nextCursor)}`,
+    headers: authHeaders(buyer.sessionToken),
+  });
+  assert.equal(secondPage.statusCode, 200);
+  assert.equal(secondPage.json().items.length, 1);
+  assert.notEqual(secondPage.json().items[0].id, firstPage.json().items[0].id);
 });
 
 test("inquiry conversations enforce participant access, read state, and sender caps", async () => {

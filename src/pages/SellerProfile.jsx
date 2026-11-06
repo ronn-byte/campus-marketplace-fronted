@@ -13,6 +13,7 @@ import {
 export default function SellerProfile() {
   const { sellerId } = useParams();
   const location = useLocation();
+  const inquiryId = new URLSearchParams(location.search).get("inquiryId");
   const backPath = location.state?.from || "/";
   const listingId = getListingIdFromNavigationState(location.state);
   const [state, setState] = useState({ status: "loading" });
@@ -24,7 +25,9 @@ export default function SellerProfile() {
       : Promise.resolve(null);
 
     Promise.all([
-      apiClient.get(`/sellers/${encodeURIComponent(sellerId)}`),
+      apiClient.get(`/sellers/${encodeURIComponent(sellerId)}`, {
+        params: inquiryId ? { inquiryId } : undefined,
+      }),
       listingRequest,
     ])
       .then(([{ data }, listing]) => {
@@ -39,14 +42,14 @@ export default function SellerProfile() {
         setState({ status: error.response?.status === 404 ? "missing" : "error", message: getApiErrorMessage(error) });
       });
     return () => { active = false; };
-  }, [listingId, sellerId]);
+  }, [inquiryId, listingId, sellerId]);
 
   if (state.status === "loading") return <div className="page-shell"><p role="status">Loading seller profile...</p></div>;
   if (state.status !== "found") return <div className="page-shell"><Link className="text-link" to={backPath}>← Back to listing</Link><h1>{state.status === "missing" ? "Seller unavailable" : "Unable to load profile"}</h1><p role="alert">{state.message}</p></div>;
 
   const { profile } = state;
-  const phone = normalizeWhatsAppNumber(profile.phoneNumber);
-  const whatsapp = normalizeWhatsAppNumber(profile.whatsappNumber);
+  const phone = normalizeWhatsAppNumber(profile.sellerPublicPhoneNumber);
+  const whatsapp = normalizeWhatsAppNumber(profile.sellerPublicWhatsappNumber);
   const whatsappUrl = buildWhatsAppUrl({ phoneNumber: whatsapp, listing: state.listing });
   return (
     <div className="page-shell seller-profile">
