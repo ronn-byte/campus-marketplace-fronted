@@ -29,6 +29,8 @@ export const profileUpdateSchema = z
     nickname: normalizeOptionalText(60),
     phoneNumber: phoneNumberSchema,
     whatsappNumber: whatsappNumberSchema,
+    sellerPublicPhoneNumber: phoneNumberSchema,
+    sellerPublicWhatsappNumber: whatsappNumberSchema,
     yearOfStudy: z.coerce.number().int().min(1).max(12).optional(),
     course: normalizeOptionalText(120),
     bio: normalizeOptionalText(500),

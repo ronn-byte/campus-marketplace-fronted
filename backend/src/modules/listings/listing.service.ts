@@ -17,7 +17,7 @@ import {
   getInquiryPersistenceMode,
   type InquiryPersistenceMode,
 } from "./inquiry-compatibility.js";
-import { assertBuyerAuthorized } from "../verification/verification.service.js";
+import { assertBuyerAuthorized, assertSellerAuthorized } from "../verification/verification.service.js";
 import { isSellerProfileComplete } from "../profile/profile.service.js";
 import {
   MAX_PUBLIC_LISTING_OFFSET,
@@ -32,7 +32,6 @@ import {
   getListingImageUrl,
   writeListingImageFile,
 } from "../../lib/storage.js";
-import { assertSellerAuthorized } from "../verification/verification.service.js";
 
 type ListingImageUpload = {
   buffer: Buffer;
@@ -65,6 +64,23 @@ type PublishListingInput = {
   sellerId: string;
 };
 
+type InquiryInboxInput = {
+  filter: "all" | "buying" | "selling" | "unread";
+  pageSize: number;
+  cursor?: string | undefined;
+  listingId?: string | undefined;
+  inquiryId?: string | undefined;
+};
+
+type InquiryInboxCursor = {
+  activityAt: string;
+  id: string;
+};
+type SellerListingsInput = {
+  page: number;
+  pageSize: number;
+  status: "ALL" | "PUBLISHED" | "DRAFT" | "RESERVED" | "REMOVED" | "SOLD" | "SUSPENDED";
+};
 type UpdateListingInput = {
   [Key in keyof CreateListingInput]?: CreateListingInput[Key] | undefined;
 };
@@ -608,7 +624,12 @@ export async function publishListing(input: PublishListingInput) {
 
     const sellerProfile = await transaction.profile.findUnique({
       where: { userId: input.sellerId },
-      select: { nickname: true, course: true },
+      select: {
+        nickname: true,
+        course: true,
+        sellerPublicPhoneNumber: true,
+        sellerPublicWhatsappNumber: true,
+      },
     });
 
     if (!isSellerProfileComplete(sellerProfile)) {
@@ -616,6 +637,18 @@ export async function publishListing(input: PublishListingInput) {
         422,
         "SELLER_PROFILE_INCOMPLETE",
         "Complete your seller profile with a nickname and course before publishing.",
+      );
+    }
+
+    const missingContacts = [
+      !sellerProfile?.sellerPublicPhoneNumber?.trim() ? "seller phone number" : null,
+      !sellerProfile?.sellerPublicWhatsappNumber?.trim() ? "seller WhatsApp number" : null,
+    ].filter((value): value is string => value !== null);
+    if (missingContacts.length > 0) {
+      throw new AppError(
+        422,
+        "SELLER_CONTACT_INCOMPLETE",
+        `Add your ${missingContacts.join(" and ")} to your profile before publishing. Your draft and images are saved.`,
       );
     }
 
@@ -1000,15 +1033,19 @@ export async function getPublicListing(listingId: string, viewerId?: string) {
 
 export async function getSellerListings(
   sellerId: string,
-  input: ListPublishedListingsInput,
+  input: SellerListingsInput,
 ) {
   await assertSellerAuthorized(sellerId);
   const skip = (input.page - 1) * input.pageSize;
+  const statusWhere: Prisma.ListingWhereInput = input.status === "ALL"
+    ? { status: { not: ListingStatus.REMOVED } }
+    : { status: input.status };
+  const listingWhere: Prisma.ListingWhereInput = { sellerId, ...statusWhere };
 
-  const [listings, total] = await prisma.$transaction([
+  const [listings, total, statusRows] = await prisma.$transaction([
     prisma.listing.findMany({
-      where: { sellerId },
-      orderBy: { createdAt: "desc" },
+      where: listingWhere,
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
       skip,
       take: input.pageSize,
       select: {
@@ -1034,18 +1071,83 @@ export async function getSellerListings(
             sortOrder: true,
           },
         },
-        _count: {
-          select: { inquiries: true },
-        },
       },
     }),
-    prisma.listing.count({ where: { sellerId } }),
+    prisma.listing.count({ where: listingWhere }),
+    prisma.listing.groupBy({
+      by: ["status"],
+      where: { sellerId },
+      orderBy: { status: "asc" },
+      _count: { id: true },
+    }),
   ]);
 
-  const items = listings.map(({ _count, ...listing }) => ({
+  const persistenceMode = listings.length > 0
+    ? await getInquiryPersistenceModeOrUnavailable()
+    : "messaging";
+  const inquiryMetrics = listings.length > 0 && persistenceMode === "legacy"
+    ? await prisma.$queryRaw<Array<{
+        listingId: string;
+        inquiryCount: number;
+        unreadInquiryCount: number;
+      }>>(Prisma.sql`
+        SELECT
+          i."listingId" AS "listingId",
+          COUNT(DISTINCT i."id")::int AS "inquiryCount",
+          0::int AS "unreadInquiryCount"
+        FROM "public"."listing_inquiries" i
+        JOIN "public"."listings" l ON l."id" = i."listingId"
+        WHERE l."sellerId" = ${sellerId}::uuid
+          AND i."listingId" IN (${Prisma.join(listings.map(({ id }) => Prisma.sql`${id}::uuid`))})
+        GROUP BY i."listingId"
+      `)
+    : listings.length > 0
+    ? await prisma.$queryRaw<Array<{
+        listingId: string;
+        inquiryCount: number;
+        unreadInquiryCount: number;
+      }>>(Prisma.sql`
+        SELECT
+          i."listingId" AS "listingId",
+          COUNT(DISTINCT i."id")::int AS "inquiryCount",
+          COUNT(DISTINCT i."id") FILTER (
+            WHERE m."id" IS NOT NULL
+              AND m."sender" = ${InquiryMessageSender.BUYER}::"InquiryMessageSender"
+              AND (
+                m."readAt" IS NULL
+                OR (m."sequence" = 1 AND m."readAt" = m."createdAt")
+              )
+          )::int AS "unreadInquiryCount"
+        FROM "public"."listing_inquiries" i
+        JOIN "public"."listings" l ON l."id" = i."listingId"
+        LEFT JOIN "public"."listing_inquiry_messages" m ON m."inquiryId" = i."id"
+        WHERE l."sellerId" = ${sellerId}::uuid
+          AND i."listingId" IN (${Prisma.join(listings.map(({ id }) => Prisma.sql`${id}::uuid`))})
+        GROUP BY i."listingId"
+      `)
+    : [];
+  const metricsByListingId = new Map(inquiryMetrics.map((row) => [row.listingId, row]));
+  const statusCountByStatus = new Map(statusRows.map((row) => [
+    row.status,
+    typeof row._count === "object" ? row._count.id ?? 0 : 0,
+  ]));
+  const count = (status: ListingStatus) => statusCountByStatus.get(status) ?? 0;
+  const statusCounts = {
+    all: count(ListingStatus.PUBLISHED) + count(ListingStatus.DRAFT) + count(ListingStatus.RESERVED)
+      + count(ListingStatus.SOLD) + count(ListingStatus.SUSPENDED),
+    active: count(ListingStatus.PUBLISHED),
+    drafts: count(ListingStatus.DRAFT),
+    reserved: count(ListingStatus.RESERVED),
+    archive: count(ListingStatus.REMOVED),
+    sold: count(ListingStatus.SOLD),
+    other: count(ListingStatus.SUSPENDED),
+  };
+
+  const items = listings.map((listing) => ({
     ...listing,
-    inquiryCount: _count.inquiries,
     images: withImageUrls(listing.images),
+    inquiryCount: metricsByListingId.get(listing.id)?.inquiryCount ?? 0,
+    unreadInquiryCount: metricsByListingId.get(listing.id)?.unreadInquiryCount ?? 0,
   }));
 
   return {
@@ -1056,6 +1158,7 @@ export async function getSellerListings(
       pageSize: input.pageSize,
       total,
       totalPages: Math.ceil(total / input.pageSize),
+      statusCounts,
     },
   };
 }
@@ -1083,7 +1186,11 @@ export async function getBuyerInquiries(
             id: true,
             title: true,
             status: true,
-            seller: { select: { id: true } },
+            images: {
+              where: { processingStatus: "READY", removedAt: null },
+              orderBy: { sortOrder: "asc" },
+              select: { id: true, objectKey: true, sortOrder: true },
+            },
             category: {
               select: {
                 id: true,
@@ -1091,6 +1198,13 @@ export async function getBuyerInquiries(
                 slug: true,
               },
             },
+              seller: {
+                select: {
+                  id: true,
+                  profile: { select: { nickname: true } },
+                  studentProfile: { select: { displayName: true } },
+                },
+              },
           },
         },
       },
@@ -1112,7 +1226,24 @@ export async function getBuyerInquiries(
         createdAt: inquiry.createdAt,
         updatedAt: inquiry.updatedAt,
         unreadMessageCount: preview?.unreadMessageCount ?? 0,
-        listing: inquiry.listing,
+          latestMessage: preview?.latestMessage ?? preview?.message ?? "",
+          latestMessageAt: preview?.latestMessageAt ?? inquiry.updatedAt,
+          sellerHasReplied: preview?.sellerHasReplied ?? false,
+          seller: {
+            id: inquiry.listing.seller.id,
+            name: inquiry.listing.seller.profile?.nickname
+              ?? inquiry.listing.seller.studentProfile?.displayName
+              ?? "MUT Market seller",
+          },
+        listing: {
+          ...inquiry.listing,
+          // Expose only display URLs and ordering metadata, never storage keys.
+          images: inquiry.listing.images.map(({ id, objectKey, sortOrder }) => ({
+            id,
+            sortOrder,
+            url: getListingImageUrl(objectKey),
+          })),
+        },
       };
     }),
     meta: {
@@ -1120,6 +1251,215 @@ export async function getBuyerInquiries(
       pageSize: input.pageSize,
       total,
       totalPages: Math.ceil(total / input.pageSize),
+    },
+  };
+}
+
+function decodeInquiryInboxCursor(cursor: string | undefined): {
+  activityAt: Date;
+  id: string;
+} | undefined {
+  if (!cursor) return undefined;
+
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Partial<InquiryInboxCursor>;
+    const activityAt = typeof decoded.activityAt === "string"
+      ? new Date(decoded.activityAt)
+      : new Date(Number.NaN);
+    const isUuid = typeof decoded.id === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(decoded.id);
+    if (!Number.isFinite(activityAt.getTime()) || !isUuid) throw new Error("Invalid cursor payload.");
+    return { activityAt, id: decoded.id as string };
+  } catch {
+    throw new AppError(422, "VALIDATION_ERROR", "The inbox cursor is invalid.");
+  }
+}
+
+function encodeInquiryInboxCursor(cursor: { activityAt: Date; id: string }) {
+  return Buffer.from(JSON.stringify({
+    activityAt: cursor.activityAt.toISOString(),
+    id: cursor.id,
+  } satisfies InquiryInboxCursor), "utf8").toString("base64url");
+}
+
+export async function getInquiryInbox(userId: string, input: InquiryInboxInput) {
+  // Match the protected buyer and seller conversation access requirements.
+  await assertBuyerAuthorized(userId);
+  await assertSellerAuthorized(userId);
+  const persistenceMode = await getInquiryPersistenceModeOrUnavailable();
+  const cursor = decodeInquiryInboxCursor(input.cursor);
+  const listingFilter = input.listingId
+    ? Prisma.sql`AND i."listingId" = ${input.listingId}::uuid`
+    : Prisma.empty;
+  const inquiryFilter = input.inquiryId
+    ? Prisma.sql`AND i."id" = ${input.inquiryId}::uuid`
+    : Prisma.empty;
+  const contextFilter = input.filter === "buying"
+    ? Prisma.sql`AND "buyerId" = ${userId}::uuid`
+    : input.filter === "selling"
+      ? Prisma.sql`AND "sellerId" = ${userId}::uuid`
+      : Prisma.empty;
+  const unreadFilter = input.filter === "unread"
+    ? Prisma.sql`AND "unreadMessageCount" > 0`
+    : Prisma.empty;
+  const cursorFilter = cursor
+    ? Prisma.sql`AND (
+        "activityAt" < ${cursor.activityAt}::timestamptz
+        OR ("activityAt" = ${cursor.activityAt}::timestamptz AND id < ${cursor.id}::uuid)
+      )`
+    : Prisma.empty;
+
+  const rows = persistenceMode === "legacy"
+    ? await prisma.$queryRaw<Array<{
+        id: string;
+        listingId: string;
+        buyerId: string;
+        status: ListingInquiryStatus;
+        activityAt: Date;
+        unreadMessageCount: number;
+        sellerId: string;
+      }>>(Prisma.sql`
+        WITH inbox_rows AS (
+          SELECT
+            i."id",
+            i."listingId",
+            i."buyerId",
+            i."status",
+            i."createdAt" AS "activityAt",
+            0::int AS "unreadMessageCount",
+            l."sellerId"
+          FROM "public"."listing_inquiries" i
+          JOIN "public"."listings" l ON l."id" = i."listingId"
+          WHERE (i."buyerId" = ${userId}::uuid OR l."sellerId" = ${userId}::uuid)
+            ${listingFilter}
+            ${inquiryFilter}
+        )
+        SELECT * FROM inbox_rows
+        WHERE TRUE ${contextFilter} ${unreadFilter} ${cursorFilter}
+        ORDER BY "activityAt" DESC, id DESC
+        LIMIT ${input.pageSize + 1}
+      `)
+    : await prisma.$queryRaw<Array<{
+        id: string;
+        listingId: string;
+        buyerId: string;
+        status: ListingInquiryStatus;
+        activityAt: Date;
+        unreadMessageCount: number;
+        sellerId: string;
+      }>>(Prisma.sql`
+        WITH inbox_rows AS (
+          SELECT
+            i."id",
+            i."listingId",
+            i."buyerId",
+            i."status",
+            COALESCE(MAX(m."createdAt"), i."createdAt") AS "activityAt",
+            COUNT(m."id") FILTER (
+              WHERE (
+                i."buyerId" = ${userId}::uuid
+                AND m."sender" = ${InquiryMessageSender.SELLER}::"InquiryMessageSender"
+                AND m."readAt" IS NULL
+              ) OR (
+                l."sellerId" = ${userId}::uuid
+                AND m."sender" = ${InquiryMessageSender.BUYER}::"InquiryMessageSender"
+                AND (
+                  m."readAt" IS NULL
+                  OR (m."sequence" = 1 AND m."readAt" = m."createdAt")
+                )
+              )
+            )::int AS "unreadMessageCount",
+            l."sellerId"
+          FROM "public"."listing_inquiries" i
+          JOIN "public"."listings" l ON l."id" = i."listingId"
+          LEFT JOIN "public"."listing_inquiry_messages" m ON m."inquiryId" = i."id"
+          WHERE (i."buyerId" = ${userId}::uuid OR l."sellerId" = ${userId}::uuid)
+            ${listingFilter}
+            ${inquiryFilter}
+          GROUP BY i."id", i."listingId", i."buyerId", i."status", i."createdAt", l."sellerId"
+        )
+        SELECT * FROM inbox_rows
+        WHERE TRUE ${contextFilter} ${unreadFilter} ${cursorFilter}
+        ORDER BY "activityAt" DESC, id DESC
+        LIMIT ${input.pageSize + 1}
+      `);
+
+  const hasMore = rows.length > input.pageSize;
+  const pageRows = rows.slice(0, input.pageSize);
+  const inquiryIds = pageRows.map(({ id }) => id);
+  const inquiries = inquiryIds.length > 0
+    ? await prisma.listingInquiry.findMany({
+        where: { id: { in: inquiryIds } },
+        select: {
+          id: true,
+          status: true,
+          listing: {
+            select: {
+              id: true,
+              title: true,
+              status: true,
+              images: {
+                where: { processingStatus: "READY", removedAt: null },
+                orderBy: { sortOrder: "asc" },
+                take: 1,
+                select: { objectKey: true },
+              },
+              seller: {
+                select: {
+                  id: true,
+                  profile: { select: { nickname: true } },
+                  studentProfile: { select: { displayName: true } },
+                },
+              },
+            },
+          },
+          buyer: {
+            select: { id: true, studentProfile: { select: { displayName: true } } },
+          },
+        },
+      })
+    : [];
+  const inquiryById = new Map(inquiries.map((inquiry) => [inquiry.id, inquiry]));
+  const previews = await getInquiryPreviews(inquiryIds, InquiryMessageSender.SELLER);
+  const items = pageRows.flatMap((row) => {
+    const inquiry = inquiryById.get(row.id);
+    if (!inquiry) return [];
+    const preview = previews.get(row.id);
+    const isBuyer = row.buyerId === userId;
+    const image = inquiry.listing.images[0];
+    return [{
+      id: inquiry.id,
+      context: isBuyer ? "BUYING" as const : "SELLING" as const,
+      inquiryStatus: inquiry.status,
+      listing: {
+        id: inquiry.listing.id,
+        title: inquiry.listing.title,
+        status: inquiry.listing.status,
+        imageUrl: image ? getListingImageUrl(image.objectKey) : null,
+      },
+      otherParticipant: {
+        id: isBuyer ? inquiry.listing.seller.id : inquiry.buyer.id,
+        displayName: isBuyer
+          ? inquiry.listing.seller.profile?.nickname ?? inquiry.listing.seller.studentProfile?.displayName ?? "MUT Market seller"
+          : inquiry.buyer.studentProfile?.displayName ?? "MUT student",
+      },
+      latestMessagePreview: preview?.latestMessage ?? preview?.message ?? "",
+      latestMessageAt: row.activityAt,
+      unreadMessageCount: row.unreadMessageCount,
+      hasUnreadMessages: row.unreadMessageCount > 0,
+      updatedAt: row.activityAt,
+    }];
+  });
+  const lastRow = pageRows.at(-1);
+
+  return {
+    items,
+    page: {
+      pageSize: input.pageSize,
+      hasMore,
+      nextCursor: hasMore && lastRow
+        ? encodeInquiryInboxCursor({ activityAt: lastRow.activityAt, id: lastRow.id })
+        : null,
     },
   };
 }
@@ -1317,6 +1657,9 @@ async function getInquiryPreviews(
   const previews = new Map<string, {
     message: string;
     unreadMessageCount: number;
+    latestMessage: string;
+    latestMessageAt: Date | null;
+    sellerHasReplied: boolean;
   }>();
   if (inquiryIds.length === 0) return previews;
 
@@ -1325,8 +1668,10 @@ async function getInquiryPreviews(
     const rows = await prisma.$queryRaw<Array<{
       id: string;
       message: string | null;
+      createdAt: Date;
     }>>(Prisma.sql`
       SELECT "id", "message"
+        , "createdAt"
       FROM "listing_inquiries"
       WHERE "id" IN (${Prisma.join(inquiryIds.map((id) => Prisma.sql`${id}::uuid`))})
     `);
@@ -1334,6 +1679,9 @@ async function getInquiryPreviews(
       previews.set(row.id, {
         message: row.message ?? "",
         unreadMessageCount: 0,
+        latestMessage: row.message ?? "",
+        latestMessageAt: row.createdAt,
+        sellerHasReplied: false,
       });
     }
     return previews;
@@ -1348,6 +1696,7 @@ async function getInquiryPreviews(
       content: true,
       sequence: true,
       readAt: true,
+      createdAt: true,
     },
   });
 
@@ -1355,14 +1704,33 @@ async function getInquiryPreviews(
     const preview = previews.get(message.inquiryId) ?? {
       message: "",
       unreadMessageCount: 0,
+      latestMessage: "",
+      latestMessageAt: null,
+      sellerHasReplied: false,
     };
+    preview.latestMessage = message.content;
+    preview.latestMessageAt = message.createdAt;
+    if (message.sender === InquiryMessageSender.SELLER) {
+      preview.sellerHasReplied = true;
+    }
     if (
       message.sender === InquiryMessageSender.BUYER
       && message.sequence === 1
     ) {
       preview.message = message.content;
     }
-    if (message.sender === unreadSender && message.readAt === null) {
+    // Legacy rows are backfilled with readAt=createdAt because their prior
+    // schema had no read receipt. Treat that equality as an unread sentinel
+    // for the seller until they open the inquiry; never imply a historical read.
+    const isBackfilledUnread =
+      unreadSender === InquiryMessageSender.BUYER
+      && message.sender === InquiryMessageSender.BUYER
+      && message.sequence === 1
+      && message.readAt?.getTime() === message.createdAt.getTime();
+    if (
+      message.sender === unreadSender
+      && (message.readAt === null || isBackfilledUnread)
+    ) {
       preview.unreadMessageCount += 1;
     }
     previews.set(message.inquiryId, preview);
@@ -1460,7 +1828,15 @@ export async function getInquiryThread(
   });
   const sentCount = messages.filter((message) => message.sender === viewerRole).length;
   const unreadMessageCount = messages.filter(
-    (message) => message.sender !== viewerRole && message.readAt === null,
+    (message) => message.sender !== viewerRole && (
+      message.readAt === null
+      || (
+        viewerRole === InquiryMessageSender.SELLER
+        && message.sender === InquiryMessageSender.BUYER
+        && message.sequence === 1
+        && message.readAt.getTime() === message.createdAt.getTime()
+      )
+    ),
   ).length;
 
   return {
@@ -1495,18 +1871,30 @@ export async function markInquiryMessagesRead(
   }
 
   const readAt = new Date();
-  const result = await prisma.listingInquiryMessage.updateMany({
-    where: {
-      inquiryId,
-      sender: viewerRole === InquiryMessageSender.BUYER
-        ? InquiryMessageSender.SELLER
-        : InquiryMessageSender.BUYER,
-      readAt: null,
-    },
-    data: { readAt },
-  });
+  const oppositeSender = viewerRole === InquiryMessageSender.BUYER
+    ? InquiryMessageSender.SELLER
+    : InquiryMessageSender.BUYER;
+  const updatedCount = viewerRole === InquiryMessageSender.SELLER
+    ? await prisma.$executeRaw(Prisma.sql`
+        UPDATE "listing_inquiry_messages"
+        SET "readAt" = CASE
+          WHEN "sequence" = 1 AND "readAt" = "createdAt"
+            THEN GREATEST(CURRENT_TIMESTAMP, "createdAt" + INTERVAL '1 millisecond')
+          ELSE ${readAt}
+        END
+        WHERE "inquiryId" = ${inquiryId}::uuid
+          AND "sender" = ${oppositeSender}::"InquiryMessageSender"
+          AND (
+            "readAt" IS NULL
+            OR ("sequence" = 1 AND "readAt" = "createdAt")
+          )
+      `)
+    : await prisma.listingInquiryMessage.updateMany({
+        where: { inquiryId, sender: oppositeSender, readAt: null },
+        data: { readAt },
+      }).then((result) => result.count);
 
-  return { updatedCount: result.count, readAt };
+  return { updatedCount, readAt };
 }
 
 export async function sendInquiryMessage(
@@ -1617,34 +2005,40 @@ export async function getInquiryUnreadSummary(userId: string) {
     };
   }
 
-  const [buyerGroups, sellerGroups] = await Promise.all([
-    prisma.listingInquiryMessage.groupBy({
-      by: ["inquiryId"],
-      where: {
-        sender: InquiryMessageSender.SELLER,
-        readAt: null,
-        inquiry: { buyerId: userId },
-      },
-      _count: { _all: true },
-    }),
-    prisma.listingInquiryMessage.groupBy({
-      by: ["inquiryId"],
-      where: {
-        sender: InquiryMessageSender.BUYER,
-        readAt: null,
-        inquiry: { listing: { sellerId: userId } },
-      },
-      _count: { _all: true },
-    }),
+  const [buyerSummary, sellerSummary] = await Promise.all([
+    prisma.$queryRaw<Array<{ threads: number; messages: number }>>(Prisma.sql`
+      SELECT COUNT(*)::int AS threads, COALESCE(SUM(unread_count), 0)::int AS messages
+      FROM (
+        SELECT m."inquiryId", COUNT(*)::int AS unread_count
+        FROM "listing_inquiry_messages" m
+        JOIN "listing_inquiries" i ON i."id" = m."inquiryId"
+        WHERE i."buyerId" = ${userId}::uuid
+          AND m."sender" = ${InquiryMessageSender.SELLER}::"InquiryMessageSender"
+          AND m."readAt" IS NULL
+        GROUP BY m."inquiryId"
+      ) unread
+    `),
+    prisma.$queryRaw<Array<{ threads: number; messages: number }>>(Prisma.sql`
+      SELECT COUNT(*)::int AS threads, COALESCE(SUM(unread_count), 0)::int AS messages
+      FROM (
+        SELECT m."inquiryId", COUNT(*)::int AS unread_count
+        FROM "listing_inquiry_messages" m
+        JOIN "listing_inquiries" i ON i."id" = m."inquiryId"
+        JOIN "listings" l ON l."id" = i."listingId"
+        WHERE l."sellerId" = ${userId}::uuid
+          AND m."sender" = ${InquiryMessageSender.BUYER}::"InquiryMessageSender"
+          AND (
+            m."readAt" IS NULL
+            OR (m."sequence" = 1 AND m."readAt" = m."createdAt")
+          )
+        GROUP BY m."inquiryId"
+      ) unread
+    `),
   ]);
-  const summarize = (groups: { _count: { _all: number } }[]) => ({
-    threads: groups.length,
-    messages: groups.reduce((total, group) => total + group._count._all, 0),
-  });
 
   return {
-    buyer: summarize(buyerGroups),
-    seller: summarize(sellerGroups),
+    buyer: buyerSummary[0] ?? { threads: 0, messages: 0 },
+    seller: sellerSummary[0] ?? { threads: 0, messages: 0 },
   };
 }
 

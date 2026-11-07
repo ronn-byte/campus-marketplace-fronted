@@ -52,7 +52,7 @@ export default function Navbar() {
     }
   };
 
-  const { threads: unreadThreadCount, messages: unreadMessageCount } = getUnreadInquiryCounts(unreadSummary);
+  const unreadCounts = getUnreadInquiryCounts(unreadSummary);
 
   return (
     <nav className="site-nav" aria-label="Main navigation">
@@ -65,19 +65,20 @@ export default function Navbar() {
           <NavLink to="/" end className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>Explore</NavLink>
           <NavLink to="/post-item" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>Sell an item</NavLink>
           {isAuthenticated && <>
-            <NavLink to="/my-listings" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>My Listings</NavLink>
-            <NavLink to="/my-inquiries" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>
-              My Inquiries
-              {unreadThreadCount > 0 && (
+            <NavLink to="/seller-inventory" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>Seller Inventory</NavLink>
+            <NavLink to="/messages" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>
+              Messages
+              {unreadCounts.threads > 0 && (
                 <span
                   className="nav-unread-badge"
-                  title={`${unreadThreadCount} unread inquiry threads, ${unreadMessageCount} unread messages`}
-                  aria-label={`${unreadThreadCount} unread inquiry threads and ${unreadMessageCount} unread messages`}
+                  title={`${unreadCounts.threads} unread conversations, ${unreadCounts.messages} unread messages`}
+                  aria-label={`${unreadCounts.threads} unread conversations and ${unreadCounts.messages} unread messages`}
                 >
-                  {unreadThreadCount}
+                  {unreadCounts.threads}
                 </span>
               )}
             </NavLink>
+            <NavLink to="/my-inquiries" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>My Inquiries</NavLink>
           </>}
         </div>
         <div className="site-nav__actions">
@@ -95,7 +96,8 @@ export default function Navbar() {
               {menuOpen && (
                 <div className="profile-menu__panel" role="menu">
                   <Link to="/profile" className="profile-menu__item" onClick={() => setMenuOpen(false)}>My Profile</Link>
-                  <Link to="/my-listings" className="profile-menu__item" onClick={() => setMenuOpen(false)}>My Listings</Link>
+                  <Link to="/seller-inventory" className="profile-menu__item" onClick={() => setMenuOpen(false)}>Seller Inventory</Link>
+                  <Link to="/messages" className="profile-menu__item" onClick={() => setMenuOpen(false)}>Messages</Link>
                   <Link to="/my-inquiries" className="profile-menu__item" onClick={() => setMenuOpen(false)}>My Inquiries</Link>
                   <Link to="/settings" className="profile-menu__item" onClick={() => setMenuOpen(false)}>Settings</Link>
                   <button type="button" className="profile-menu__action" onClick={handleLogout}>Log out</button>

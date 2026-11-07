@@ -15,7 +15,14 @@ export async function registerProfileRoutes(app: FastifyInstance): Promise<void>
   app.get("/sellers/:sellerId", { preHandler: optionalAuth }, async (request, reply) => {
     const params = z.object({ sellerId: z.string().uuid() }).safeParse(request.params);
     if (!params.success) throw new AppError(422, "VALIDATION_ERROR", "The seller ID is invalid.");
-    const profile = await getPublicSellerProfile(params.data.sellerId, Boolean(request.user));
+    const query = z.object({ inquiryId: z.string().uuid().optional() }).safeParse(request.query);
+    if (!query.success) throw new AppError(422, "VALIDATION_ERROR", "The inquiry ID is invalid.");
+    const profile = await getPublicSellerProfile(
+      params.data.sellerId,
+      Boolean(request.user),
+      request.user?.id,
+      query.data.inquiryId,
+    );
     return reply.status(200).send({ profile });
   });
 

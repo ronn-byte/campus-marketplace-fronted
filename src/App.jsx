@@ -1,6 +1,6 @@
 import VerifyEmail from "./pages/VerifyEmail";
 import VerifyStudent from "./pages/VerifyStudent.jsx";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import Home from "./pages/Home.jsx";
 import PostItem from "./pages/PostItem.jsx";
 import Login from "./pages/Login.jsx";
@@ -9,6 +9,7 @@ import ForgotPassword from "./pages/ForgotPassword.jsx";
 import ListingDetails from "./pages/ListingDetails.jsx";
 import MyListings from "./pages/MyListings.jsx";
 import MyInquiries from "./pages/MyInquiries.jsx";
+import Messages from "./pages/Messages.jsx";
 import Profile from "./pages/Profile.jsx";
 import Settings from "./pages/Settings.jsx";
 import Navbar from "./components/Navbar.jsx";
@@ -33,8 +34,10 @@ function App() {
 	    <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/listing/:id" element={<ListingDetails />} />
             <Route path="/sellers/:sellerId" element={<SellerProfile />} />
-            <Route path="/my-listings" element={<MyListings />} />
+            <Route path="/seller-inventory" element={<MyListings />} />
+            <Route path="/my-listings" element={<Navigate to="/seller-inventory" replace />} />
             <Route path="/my-inquiries" element={<MyInquiries />} />
+            <Route path="/messages" element={<Messages />} />
             <Route path="/profile" element={<Profile />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="/verify-student" element={<VerifyStudent />} />

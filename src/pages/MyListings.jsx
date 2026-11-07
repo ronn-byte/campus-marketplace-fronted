@@ -1,19 +1,33 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import InquiryConversation from "../components/InquiryConversation";
+import { useAuth } from "../hooks/useAuth";
 import { getApiErrorMessage } from "../services/apiClient";
 import {
-  getInquiryUnreadSummary,
-  getListingInquiries,
   getMyListings,
+  getInquiryUnreadSummary,
   markListingSold,
   removeListing,
   releaseListingReservation,
   reserveListing,
-  updateListingInquiryStatus,
 } from "../services/listingService";
 import { getListingRemovalAction } from "../services/listingRemoval";
-import { useAuth } from "../hooks/useAuth";
+
+const TABS = [
+  { id: "all", label: "All", status: "ALL", countKey: "all" },
+  { id: "active", label: "Active", status: "PUBLISHED", countKey: "active" },
+  { id: "drafts", label: "Drafts", status: "DRAFT", countKey: "drafts" },
+  { id: "reserved", label: "Reserved", status: "RESERVED", countKey: "reserved" },
+  { id: "sold", label: "Sold", status: "SOLD", countKey: "sold" },
+  { id: "suspended", label: "Suspended", status: "SUSPENDED", countKey: "other" },
+  { id: "archive", label: "Removed archive", status: "REMOVED", countKey: "archive" },
+];
+
+const PRIMARY_TILES = [
+  { id: "active", label: "Active", countKey: "active", dot: "active" },
+  { id: "drafts", label: "Drafts", countKey: "drafts", dot: "drafts" },
+  { id: "reserved", label: "Reserved", countKey: "reserved", dot: "reserved" },
+  { id: "archive", label: "Removed", countKey: "archive", dot: "removed" },
+];
 
 const dateFormatter = new Intl.DateTimeFormat(undefined, {
   dateStyle: "medium",
@@ -40,124 +54,39 @@ function SignInPrompt() {
   );
 }
 
-function InquiryPanel({
-  listingId,
-  data,
-  onStatusChange,
-  pendingInquiryId,
-  expandedInquiryId,
-  onToggleConversation,
-  onThreadUpdated,
-}) {
-  if (data?.status === "loading") {
-    return <p className="muted" role="status">Loading inquiries…</p>;
-  }
-  if (data?.status === "error") {
-    return <p className="form-alert" role="alert">{data.message}</p>;
-  }
-  if (!data || data.items.length === 0) {
-    return <p className="muted">There are no inquiries for this listing yet.</p>;
-  }
-
-  return (
-    <div className="workspace-inquiry-list">
-      {data.items.map((inquiry) => (
-        <article className="workspace-inquiry" key={inquiry.id}>
-          <div className="workspace-inquiry__heading">
-            <div>
-              <strong>{inquiry.buyer?.name || "MUT student"}</strong>
-              <p className="muted">{inquiry.buyer?.verified ? "Verified student" : "Student buyer"} · {formatDate(inquiry.createdAt)}</p>
-            </div>
-            <StatusBadge status={inquiry.status} />
-          </div>
-          {inquiry.buyer?.id && (
-            <p className="workspace-inquiry__profile">
-              <Link className="text-link" to={`/sellers/${encodeURIComponent(inquiry.buyer.id)}`}>View buyer profile</Link>
-            </p>
-          )}
-          <p className="workspace-inquiry__message">{inquiry.message}</p>
-          <div className="workspace-actions">
-            <button
-              className="button button--secondary"
-              type="button"
-              aria-expanded={expandedInquiryId === inquiry.id}
-              onClick={() => onToggleConversation(inquiry.id)}
-            >
-              {expandedInquiryId === inquiry.id ? "Hide conversation" : "Open conversation"}
-            </button>
-            {inquiry.unreadMessageCount > 0 && (
-              <span className="workspace-unread-badge" aria-label={`${inquiry.unreadMessageCount} unread messages`}>
-                {inquiry.unreadMessageCount} unread
-              </span>
-            )}
-          </div>
-          {expandedInquiryId === inquiry.id && (
-            <InquiryConversation
-              listingId={listingId}
-              inquiryId={inquiry.id}
-              onThreadUpdated={(update) => onThreadUpdated(listingId, update)}
-            />
-          )}
-          {inquiry.status === "OPEN" && (
-            <div className="workspace-actions">
-              <button className="button button--quiet" type="button" disabled={pendingInquiryId === inquiry.id} onClick={() => onStatusChange(listingId, inquiry.id, "RESPONDED")}>
-                {pendingInquiryId === inquiry.id ? "Updating…" : "Mark responded"}
-              </button>
-              <button className="button button--secondary" type="button" disabled={pendingInquiryId === inquiry.id} onClick={() => onStatusChange(listingId, inquiry.id, "CLOSED")}>Close</button>
-            </div>
-          )}
-          {inquiry.status === "RESPONDED" && (
-            <button className="button button--secondary" type="button" disabled={pendingInquiryId === inquiry.id} onClick={() => onStatusChange(listingId, inquiry.id, "CLOSED")}>
-              {pendingInquiryId === inquiry.id ? "Updating…" : "Close inquiry"}
-            </button>
-          )}
-        </article>
-      ))}
-    </div>
-  );
-}
-
 export default function MyListings() {
   const { isAuthenticated, isLoading: isAuthLoading } = useAuth();
   const [page, setPage] = useState(1);
+  const [activeTab, setActiveTab] = useState("all");
   const [result, setResult] = useState({ status: "idle", items: [], meta: null });
   const [pageError, setPageError] = useState("");
   const [message, setMessage] = useState("");
   const [pendingListingId, setPendingListingId] = useState(null);
-  const [pendingInquiryId, setPendingInquiryId] = useState(null);
-  const [expandedListingId, setExpandedListingId] = useState(null);
-  const [inquiriesByListing, setInquiriesByListing] = useState({});
-  const [expandedInquiryId, setExpandedInquiryId] = useState(null);
   const [unreadSummary, setUnreadSummary] = useState(null);
-  const [summaryError, setSummaryError] = useState("");
+  const listingsRequestSequence = useRef(0);
 
   const loadListings = useCallback(async (requestedPage = page) => {
-    setResult((current) => ({ ...current, status: "loading" }));
+    const requestSequence = ++listingsRequestSequence.current;
+    setResult({ status: "loading", items: [], meta: null });
     setPageError("");
     try {
-      const data = await getMyListings({ page: requestedPage });
+      const selectedTab = TABS.find((tab) => tab.id === activeTab) ?? TABS[0];
+      const data = await getMyListings({ page: requestedPage, pageSize: 50, status: selectedTab.status });
+      if (requestSequence !== listingsRequestSequence.current) return;
       setResult({ status: "success", ...data });
     } catch (error) {
+      if (requestSequence !== listingsRequestSequence.current) return;
       setResult((current) => ({ ...current, status: "error" }));
       setPageError(getApiErrorMessage(error));
     }
-  }, [page]);
-
-  const loadUnreadSummary = useCallback(async () => {
-    try {
-      setUnreadSummary(await getInquiryUnreadSummary());
-      setSummaryError("");
-    } catch (error) {
-      setSummaryError(getApiErrorMessage(error));
-    }
-  }, []);
+  }, [activeTab, page]);
 
   useEffect(() => {
     if (!isAuthLoading && isAuthenticated) {
       loadListings(page);
-      loadUnreadSummary();
+      getInquiryUnreadSummary().then(setUnreadSummary).catch(() => setUnreadSummary(null));
     }
-  }, [isAuthLoading, isAuthenticated, loadListings, loadUnreadSummary, page]);
+  }, [isAuthLoading, isAuthenticated, loadListings, page]);
 
   const handleListingAction = async (listing, action, successMessage) => {
     if (pendingListingId === listing.id) return;
@@ -179,209 +108,162 @@ export default function MyListings() {
     const removal = getListingRemovalAction(listing.status);
     if (!removal || pendingListingId === listing.id) return;
     if (!window.confirm(removal.confirmation)) return;
-
     return handleListingAction(listing, removeListing, removal.successMessage);
   };
 
-  const openInquiries = async (listingId) => {
-    if (expandedListingId === listingId) {
-      setExpandedListingId(null);
-      return;
-    }
-    setExpandedListingId(listingId);
-    setExpandedInquiryId(null);
-    setInquiriesByListing((current) => ({
-      ...current,
-      [listingId]: { status: "loading", items: [] },
-    }));
-    try {
-      const inquiries = await getListingInquiries(listingId);
-      setInquiriesByListing((current) => ({
-        ...current,
-        [listingId]: { status: "success", items: inquiries },
-      }));
-    } catch (error) {
-      setInquiriesByListing((current) => ({
-        ...current,
-        [listingId]: { status: "error", message: getApiErrorMessage(error), items: [] },
-      }));
-    }
-  };
+  const tabCounts = result.meta?.statusCounts ?? {};
+  const visibleListings = useMemo(() => result.items, [result.items]);
 
-  const handleThreadUpdated = async (listingId, update) => {
-    setInquiriesByListing((current) => ({
-      ...current,
-      [listingId]: {
-        ...current[listingId],
-        items: (current[listingId]?.items || []).map((inquiry) => inquiry.id === update.inquiryId
-          ? {
-              ...inquiry,
-              status: update.status,
-              unreadMessageCount: update.unreadMessageCount,
-            }
-          : inquiry),
-      },
-    }));
-    await loadUnreadSummary();
-  };
-
-  const handleInquiryStatus = async (listingId, inquiryId, status) => {
-    setPendingInquiryId(inquiryId);
-    setMessage("");
-    try {
-      await updateListingInquiryStatus(listingId, inquiryId, status);
-    } catch (error) {
-      setInquiriesByListing((current) => ({
-        ...current,
-        [listingId]: {
-          status: "error",
-          message: getApiErrorMessage(error),
-          items: current[listingId]?.items || [],
-        },
-      }));
-      setPendingInquiryId(null);
-      return;
-    }
-
-    setMessage("Inquiry status updated.");
-    try {
-      const inquiries = await getListingInquiries(listingId);
-      setInquiriesByListing((current) => ({
-        ...current,
-        [listingId]: { status: "success", items: inquiries },
-      }));
-    } catch (error) {
-      setInquiriesByListing((current) => ({
-        ...current,
-        [listingId]: {
-          status: "success",
-          items: current[listingId]?.items || [],
-        },
-      }));
-      setPageError(`Inquiry updated, but the list could not be refreshed. ${getApiErrorMessage(error)}`);
-    } finally {
-      setPendingInquiryId(null);
-    }
+  const handlePrimaryTileClick = (tileId) => {
+    setPage(1);
+    setActiveTab((current) => current === tileId ? "all" : tileId);
   };
 
   if (isAuthLoading) {
     return <div className="page-shell"><p className="muted" role="status">Checking your sign-in status…</p></div>;
   }
-  if (!isAuthenticated) {
-    return <div className="page-shell"><SignInPrompt /></div>;
-  }
+  if (!isAuthenticated) return <div className="page-shell"><SignInPrompt /></div>;
 
   const totalPages = Number(result.meta?.totalPages) || 1;
+  const currentTab = TABS.find((tab) => tab.id === activeTab) ?? TABS[0];
 
   return (
     <div className="page-shell workspace-page">
       <div className="workspace-heading">
         <div>
           <p className="eyebrow">Seller workspace</p>
-          <h1>My Listings</h1>
-          <p className="muted">Manage your items and follow up on buyer inquiries.</p>
+          <h1>Seller Inventory</h1>
+          <p className="muted">Manage your products, monitor buyer interest and respond to conversations.</p>
         </div>
         <Link to="/post-item" className="button button--small">Sell an item</Link>
       </div>
-      {unreadSummary && (
-        <p className="workspace-unread-summary" role="status">
-          <strong>Unread buyer activity:</strong> {unreadSummary.seller.threads} conversation{unreadSummary.seller.threads === 1 ? "" : "s"} · {unreadSummary.seller.messages} message{unreadSummary.seller.messages === 1 ? "" : "s"}
-        </p>
-      )}
-      {summaryError && <p className="form-alert" role="alert">Unread counts could not be refreshed: {summaryError}</p>}
+      {unreadSummary?.seller && <p className="workspace-unread-summary" role="status"><strong>Unread buyer activity:</strong> {unreadSummary.seller.threads} conversation{unreadSummary.seller.threads === 1 ? "" : "s"} · {unreadSummary.seller.messages} message{unreadSummary.seller.messages === 1 ? "" : "s"}</p>}
+
       {message && <p className="preview-note" role="status">{message}</p>}
       {pageError && <p className="form-alert" role="alert">{pageError}</p>}
       {result.status === "loading" && <p className="muted" role="status">Loading your listings…</p>}
       {result.status === "error" && (
         <button className="button button--secondary" type="button" onClick={() => loadListings(page)}>Try again</button>
       )}
-      {result.status === "success" && result.items.length === 0 && (
-        <section className="workspace-state">
-          <h2>No listings yet</h2>
-          <p className="muted">Items you post will appear here, including their current status.</p>
-          <Link className="button" to="/post-item">Post your first item</Link>
-        </section>
-      )}
-      {result.status === "success" && result.items.length > 0 && (
+
+      {result.status === "success" && (
         <>
-          <div className="workspace-list">
-            {result.items.map((listing) => (
-              <article className="workspace-listing" key={listing.id}>
-                {listing.imageUrl
-                  ? <img className="workspace-listing__image" src={listing.imageUrl} alt={listing.title} />
-                  : <div className="workspace-listing__image workspace-listing__image--empty" aria-label="No listing image available">No image</div>}
-                <div className="workspace-listing__content">
-                  <div className="workspace-listing__heading">
-                    <div>
-                      <p className="eyebrow">{listing.category} · {listing.condition || "Condition unavailable"}</p>
-                      <h2>{listing.title}</h2>
-                    </div>
-                    <StatusBadge status={listing.status} />
-                  </div>
-                  <p className="workspace-listing__price">KSh {listing.price.toLocaleString()}</p>
-                  <p className="muted">{listing.location || "Location unavailable"}{listing.createdAt ? ` · Posted ${formatDate(listing.createdAt)}` : ""}</p>
-                  <div className="workspace-actions">
-                {listing.status === "DRAFT" && (
-          <Link
-           className="button button--quiet"
-             to={`/post-item?edit=${encodeURIComponent(listing.id)}`}
-             >
-               Edit draft
-                   </Link>
-)}
-                    {getListingRemovalAction(listing.status) && (
-                      <button
-                        className="button button--secondary"
-                        type="button"
-                        disabled={pendingListingId === listing.id}
-                        onClick={() => handleListingRemoval(listing)}
-                      >
-                        {pendingListingId === listing.id
-                          ? "Removing…"
-                          : getListingRemovalAction(listing.status).label}
-                      </button>
-                    )}
-                    {listing.status === "PUBLISHED" && (
-                      <Link
-                        className="button button--quiet"
-                        to={`/post-item?edit=${encodeURIComponent(listing.id)}`}
-                      >
-                        Edit listing
-                      </Link>
-                    )}
-                    {listing.status === "PUBLISHED" && <>
-                      <button className="button button--quiet" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, reserveListing, "Listing reserved.")}>{pendingListingId === listing.id ? "Updating…" : "Reserve"}</button>
-                      <button className="button button--secondary" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, markListingSold, "Listing marked as sold.")}>{pendingListingId === listing.id ? "Updating…" : "Mark as sold"}</button>
-                    </>}
-                    {listing.status === "RESERVED" && <>
-                      <button className="button button--quiet" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, releaseListingReservation, "Reservation released.")}>{pendingListingId === listing.id ? "Updating…" : "Release reservation"}</button>
-                      <button className="button button--secondary" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, markListingSold, "Listing marked as sold.")}>{pendingListingId === listing.id ? "Updating…" : "Mark as sold"}</button>
-                    </>}
-                    <span className="muted" aria-label={`${listing.inquiryCount ?? 0} ${listing.inquiryCount === 1 ? "inquiry" : "inquiries"}`}>
-                      {listing.inquiryCount ?? 0} {listing.inquiryCount === 1 ? "inquiry" : "inquiries"}
-                    </span>
-                    <button className="button button--secondary" type="button" aria-expanded={expandedListingId === listing.id} onClick={() => openInquiries(listing.id)}>
-                      {expandedListingId === listing.id ? "Hide inquiries" : "View inquiries"}
-                    </button>
-                  </div>
-                  {expandedListingId === listing.id && (
-                    <section className="workspace-inquiries" aria-label={`Inquiries for ${listing.title}`}>
-                      <h3>Buyer inquiries</h3>
-                      <InquiryPanel
-                        listingId={listing.id}
-                        data={inquiriesByListing[listing.id]}
-                        onStatusChange={handleInquiryStatus}
-                        pendingInquiryId={pendingInquiryId}
-                        expandedInquiryId={expandedInquiryId}
-                        onToggleConversation={(inquiryId) => setExpandedInquiryId((current) => current === inquiryId ? null : inquiryId)}
-                        onThreadUpdated={handleThreadUpdated}
-                      />
-                    </section>
-                  )}
-                </div>
-              </article>
+          <section className="seller-status-tiles" aria-label="Primary inventory status filters">
+            {PRIMARY_TILES.map((tile) => (
+              <button
+                key={tile.id}
+                type="button"
+                className={`seller-status-tile${activeTab === tile.id ? " seller-status-tile--active" : ""}`}
+                aria-pressed={activeTab === tile.id}
+                onClick={() => handlePrimaryTileClick(tile.id)}
+              >
+                <span className={`seller-status-tile__dot seller-status-tile__dot--${tile.dot}`} aria-hidden="true" />
+                <span className="seller-status-tile__label">{tile.label}</span>
+                <strong className="seller-status-tile__count">{tabCounts[tile.countKey] ?? 0}</strong>
+              </button>
+            ))}
+          </section>
+          <div className="inventory-tabs" role="tablist" aria-label="Listing inventory status">
+            {TABS.map((tab) => (
+              <button
+                className={`inventory-tab${activeTab === tab.id ? " inventory-tab--active" : ""}`}
+                id={`inventory-tab-${tab.id}`}
+                key={tab.id}
+                type="button"
+                role="tab"
+                aria-selected={activeTab === tab.id}
+                aria-controls="inventory-panel"
+                onClick={() => {
+                  setPage(1);
+                  setActiveTab(tab.id);
+                }}
+              >
+                {tab.label} <span>{tabCounts[tab.countKey] ?? 0}</span>
+              </button>
             ))}
           </div>
+
+          <section id="inventory-panel" role="tabpanel" aria-labelledby={`inventory-tab-${currentTab.id}`}>
+            {result.status === "success" && visibleListings.length === 0 ? (
+              <section className="workspace-state">
+                {tabCounts.all === 0 && tabCounts.archive === 0 ? (
+                  <>
+                    <h2>No listings yet</h2>
+                    <p className="muted">Items you post will appear here, including their current status.</p>
+                    <Link className="button" to="/post-item">Post your first item</Link>
+                  </>
+                ) : (
+                  <>
+                    <h2>{activeTab === "all" ? "No current listings" : `No ${currentTab.label.toLowerCase()} listings on this page`}</h2>
+                    <p className="muted">{activeTab === "all" && tabCounts.archive > 0
+                      ? `${tabCounts.archive} removed listing${tabCounts.archive === 1 ? " is" : "s are"} available in the Removed archive.`
+                      : "Try another inventory status filter."}</p>
+                  </>
+                )}
+              </section>
+            ) : (
+              <div className="workspace-list">
+                {visibleListings.map((listing) => {
+                  const removal = getListingRemovalAction(listing.status);
+                  return (
+                    <article className="workspace-listing" key={listing.id}>
+                      {listing.imageUrl
+                        ? <img className="workspace-listing__image" src={listing.imageUrl} alt={listing.title} />
+                        : <div className="workspace-listing__image workspace-listing__image--empty" aria-label="No listing image available">No image</div>}
+                      <div className="workspace-listing__content">
+                        <div className="workspace-listing__heading">
+                          <div>
+                            <p className="eyebrow">{listing.category} · {listing.condition || "Condition unavailable"}</p>
+                            <h2>{listing.title}</h2>
+                          </div>
+                          <StatusBadge status={listing.status} />
+                        </div>
+                        <p className="workspace-listing__price">KSh {listing.price.toLocaleString()}</p>
+                        <p className="muted">{listing.location || "Location unavailable"}{listing.createdAt ? ` · Posted ${formatDate(listing.createdAt)}` : ""}</p>
+
+                        <div className="listing-inquiry-metrics" aria-label={`Inquiry activity for ${listing.title}`}>
+                          <Link className="listing-inquiry-metrics__link" to={`/messages?filter=selling&listingId=${encodeURIComponent(listing.id)}`}>
+                            <strong>{listing.inquiryCount ?? 0}</strong> {listing.inquiryCount === 1 ? "inquiry" : "inquiries"}
+                          </Link>
+                          <span className={listing.unreadInquiryCount > 0 ? "listing-inquiry-metrics__unread" : ""}>
+                            <strong>{listing.unreadInquiryCount ?? 0}</strong> unread {listing.unreadInquiryCount === 1 ? "conversation" : "conversations"}
+                          </span>
+                          <Link className="button button--secondary button--small" to={`/messages?filter=selling&listingId=${encodeURIComponent(listing.id)}`}>Open Messages</Link>
+                        </div>
+
+                        <div className="workspace-actions">
+                          {listing.status === "PUBLISHED" && <Link className="button button--quiet" to={`/listing/${encodeURIComponent(listing.id)}`}>View listing</Link>}
+                          {listing.status === "DRAFT" && (
+                            <Link className="button button--quiet" to={`/post-item?edit=${encodeURIComponent(listing.id)}`}>Edit draft</Link>
+                          )}
+                          {removal && (
+                            <button
+                              className="button button--secondary"
+                              type="button"
+                              disabled={pendingListingId === listing.id}
+                              onClick={() => handleListingRemoval(listing)}
+                            >
+                              {pendingListingId === listing.id ? "Removing…" : removal.label}
+                            </button>
+                          )}
+                          {listing.status === "PUBLISHED" && <>
+                            <Link className="button button--quiet" to={`/post-item?edit=${encodeURIComponent(listing.id)}`}>Edit listing</Link>
+                            <button className="button button--quiet" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, reserveListing, "Listing reserved.")}>Reserve</button>
+                            <button className="button button--secondary" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, markListingSold, "Listing marked as sold.")}>Mark as sold</button>
+                          </>}
+                          {listing.status === "RESERVED" && <>
+                            <button className="button button--quiet" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, releaseListingReservation, "Reservation released.")}>Release reservation</button>
+                            <button className="button button--secondary" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, markListingSold, "Listing marked as sold.")}>Mark as sold</button>
+                          </>}
+                        </div>
+                      </div>
+                    </article>
+                  );
+                })}
+              </div>
+            )}
+          </section>
+
           {totalPages > 1 && (
             <nav className="workspace-pagination" aria-label="Listings pages">
               <button className="button button--secondary" type="button" disabled={page <= 1 || result.status === "loading"} onClick={() => setPage((current) => current - 1)}>Previous</button>

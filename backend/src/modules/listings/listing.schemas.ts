@@ -16,6 +16,18 @@ export const listListingsQuerySchema = z.object({
   pageSize: z.coerce.number().int().positive().max(50).default(20),
 }).strict();
 
+export const sellerListingsQuerySchema = listListingsQuerySchema.extend({
+  status: z.enum(["ALL", "PUBLISHED", "DRAFT", "RESERVED", "REMOVED", "SOLD", "SUSPENDED"]).default("ALL"),
+}).strict();
+
+export const inquiryInboxQuerySchema = z.object({
+  filter: z.enum(["all", "buying", "selling", "unread"]).default("all"),
+  pageSize: z.coerce.number().int().positive().max(50).default(20),
+  cursor: z.string().max(256).regex(/^[A-Za-z0-9_-]+$/).optional(),
+  listingId: z.string().uuid().optional(),
+  inquiryId: z.string().uuid().optional(),
+}).strict();
+
 // Cap offset pagination at 100,000 rows: at pageSize 50 this is page 2,001.
 export const MAX_PUBLIC_LISTING_PAGE = 2_001;
 export const MAX_PUBLIC_LISTING_OFFSET = 100_000;

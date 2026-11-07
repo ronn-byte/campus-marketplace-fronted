@@ -8,6 +8,8 @@ const emptyForm = {
   nickname: "",
   phoneNumber: "",
   whatsappNumber: "",
+  sellerPublicPhoneNumber: "",
+  sellerPublicWhatsappNumber: "",
   yearOfStudy: "",
   course: "",
   bio: "",
@@ -64,6 +66,8 @@ export default function Profile() {
           nickname: data.profile?.nickname ?? "",
           phoneNumber: data.profile?.phoneNumber ?? "",
           whatsappNumber: data.profile?.whatsappNumber ?? "",
+          sellerPublicPhoneNumber: data.profile?.sellerPublicPhoneNumber ?? "",
+          sellerPublicWhatsappNumber: data.profile?.sellerPublicWhatsappNumber ?? "",
           yearOfStudy: data.profile?.yearOfStudy ?? "",
           course: data.profile?.course ?? "",
           bio: data.profile?.bio ?? "",
@@ -145,6 +149,8 @@ export default function Profile() {
         nickname: form.nickname.trim() || null,
         phoneNumber: form.phoneNumber.trim() || null,
         whatsappNumber: form.whatsappNumber.trim() || null,
+        sellerPublicPhoneNumber: form.sellerPublicPhoneNumber.trim() || null,
+        sellerPublicWhatsappNumber: form.sellerPublicWhatsappNumber.trim() || null,
         yearOfStudy: form.yearOfStudy === "" ? undefined : Number(form.yearOfStudy),
         course: form.course.trim() || null,
         bio: form.bio.trim() || null,
@@ -155,6 +161,8 @@ export default function Profile() {
         nickname: data.profile?.nickname ?? "",
         phoneNumber: data.profile?.phoneNumber ?? "",
         whatsappNumber: data.profile?.whatsappNumber ?? "",
+        sellerPublicPhoneNumber: data.profile?.sellerPublicPhoneNumber ?? "",
+        sellerPublicWhatsappNumber: data.profile?.sellerPublicWhatsappNumber ?? "",
         yearOfStudy: data.profile?.yearOfStudy ?? "",
         course: data.profile?.course ?? "",
         bio: data.profile?.bio ?? "",
@@ -218,8 +226,8 @@ export default function Profile() {
           <div className="section-heading">
             <div>
               <p className="eyebrow">Profile</p>
-              <h2>Public details</h2>
-              <p className="muted">Phone, WhatsApp, and bio are optional. Any contact details you add here are shown on your public seller profile.</p>
+              <h2>Profile details</h2>
+              <p className="muted">Keep buyer contact information private. Seller contact information is shown to signed-in marketplace users and is required before publishing.</p>
             </div>
           </div>
 
@@ -234,19 +242,31 @@ export default function Profile() {
 
             <div className="field-grid">
               <div className="field">
-                <label htmlFor="phoneNumber">Phone number</label>
+                <label htmlFor="phoneNumber">Private phone number for buyer inquiries</label>
                 <input id="phoneNumber" name="phoneNumber" value={form.phoneNumber} onChange={handleChange} maxLength={25} placeholder="+254700000000" />
               </div>
 
               <div className="field">
-                <label htmlFor="whatsappNumber">WhatsApp number</label>
+                <label htmlFor="whatsappNumber">Private WhatsApp number for buyer inquiries</label>
                 <input id="whatsappNumber" name="whatsappNumber" value={form.whatsappNumber} onChange={handleChange} maxLength={25} placeholder="+254700000000" />
-                <small>Buyers can use this number to contact you through WhatsApp.</small>
+                <small>Used for inquiries you make as a buyer. It is not shown on your seller profile.</small>
               </div>
 
               <div className="field">
                 <label htmlFor="yearOfStudy">Year of study</label>
                 <input id="yearOfStudy" name="yearOfStudy" type="number" min="1" max="12" value={form.yearOfStudy} onChange={handleChange} placeholder="1" />
+              </div>
+            </div>
+
+            <div className="field-grid">
+              <div className="field">
+                <label htmlFor="sellerPublicPhoneNumber">Seller phone shown to signed-in buyers</label>
+                <input id="sellerPublicPhoneNumber" name="sellerPublicPhoneNumber" value={form.sellerPublicPhoneNumber} onChange={handleChange} maxLength={25} placeholder="+254700000000" />
+              </div>
+              <div className="field">
+                <label htmlFor="sellerPublicWhatsappNumber">Seller WhatsApp shown to signed-in buyers</label>
+                <input id="sellerPublicWhatsappNumber" name="sellerPublicWhatsappNumber" value={form.sellerPublicWhatsappNumber} onChange={handleChange} maxLength={25} placeholder="+254700000000" />
+                <small>These seller contact values are separate from your private buyer contact information.</small>
               </div>
             </div>
 

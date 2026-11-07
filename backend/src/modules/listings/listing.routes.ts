@@ -6,11 +6,13 @@ import { optionalAuth, requireAuth } from "../../middleware/auth.js";
 import {
   createInquiryMessageSchema,
   createListingInquirySchema,
+  inquiryInboxQuerySchema,
   createListingSchema,
   listingInquiryParamsSchema,
   listingParamsSchema,
   listingImageParamsSchema,
   listListingsQuerySchema,
+  sellerListingsQuerySchema,
   listPublicListingsQuerySchema,
   publishListingParamsSchema,
   updateInquiryStatusSchema,
@@ -24,6 +26,7 @@ import {
   createListingInquiry,
   createListing,
   getBuyerInquiries,
+  getInquiryInbox,
   getInquiryThread,
   getInquiryUnreadSummary,
   getListingCategories,
@@ -73,7 +76,7 @@ export async function registerListingRoutes(app: FastifyInstance) {
     "/listings/me",
     { preHandler: requireAuth },
     async (request, reply) => {
-      const result = listListingsQuerySchema.safeParse(request.query);
+      const result = sellerListingsQuerySchema.safeParse(request.query);
 
       if (!result.success) {
         throw new AppError(
@@ -124,6 +127,23 @@ export async function registerListingRoutes(app: FastifyInstance) {
 
       const inquiries = await getBuyerInquiries(user.id, result.data);
       return reply.status(200).send(inquiries);
+    },
+  );
+
+  app.get(
+    "/inquiries/inbox",
+    { preHandler: requireAuth },
+    async (request, reply) => {
+      const result = inquiryInboxQuerySchema.safeParse(request.query);
+      if (!result.success) {
+        throw new AppError(422, "VALIDATION_ERROR", "Please check the submitted query parameters.");
+      }
+      const user = request.user;
+      if (!user) {
+        throw new AppError(401, "UNAUTHENTICATED", "Authentication is required.");
+      }
+      const inbox = await getInquiryInbox(user.id, result.data);
+      return reply.status(200).send(inbox);
     },
   );
 

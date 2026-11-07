@@ -6,7 +6,21 @@ import {
   MAX_LISTING_PRICE,
   MAX_PUBLIC_LISTING_PAGE,
   MAX_PUBLIC_LISTING_OFFSET,
+  sellerListingsQuerySchema,
 } from "../src/modules/listings/listing.schemas.js";
+
+test("seller inventory query defaults to current listings and validates lifecycle filters", () => {
+  assert.deepEqual(sellerListingsQuerySchema.parse({}), {
+    page: 1,
+    pageSize: 20,
+    status: "ALL",
+  });
+  for (const status of ["ALL", "PUBLISHED", "DRAFT", "RESERVED", "REMOVED", "SOLD", "SUSPENDED"]) {
+    assert.equal(sellerListingsQuerySchema.parse({ status }).status, status);
+  }
+  assert.equal(sellerListingsQuerySchema.safeParse({ status: "UNKNOWN" }).success, false);
+  assert.equal(sellerListingsQuerySchema.safeParse({ sellerId: "550e8400-e29b-41d4-a716-446655440000" }).success, false);
+});
 
 test("listing prices stay within the database decimal range", () => {
   const payload = {

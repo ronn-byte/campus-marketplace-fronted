@@ -1,186 +1,104 @@
-import { useCallback, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
-import InquiryConversation from "../components/InquiryConversation";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { getApiErrorMessage } from "../services/apiClient";
+import { getBuyerInquiryListingState } from "../services/buyerInquiryListing.js";
 import { getInquiryUnreadSummary, getMyInquiries } from "../services/listingService";
 
-const dateFormatter = new Intl.DateTimeFormat(undefined, {
-  dateStyle: "medium",
-  timeStyle: "short",
-});
-
-function formatDate(value) {
+const dateFormatter = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+const formatDate = (value) => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? "Date unavailable" : dateFormatter.format(date);
-}
-
-function StatusBadge({ status }) {
-  const label = status ? status.replaceAll("_", " ").toLowerCase() : "unknown";
-  return <span className={`workspace-status workspace-status--${status?.toLowerCase() || "unknown"}`}>{label}</span>;
-}
+};
 
 export default function MyInquiries() {
   const { isAuthenticated, isLoading: isAuthLoading } = useAuth();
-  const [page, setPage] = useState(1);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const page = Math.max(1, Number.parseInt(searchParams.get("page") || "1", 10) || 1);
   const [result, setResult] = useState({ status: "idle", items: [], meta: null });
-  const [errorMessage, setErrorMessage] = useState("");
-  const [unreadSummary, setUnreadSummary] = useState(null);
+  const [error, setError] = useState("");
+  const [summary, setSummary] = useState(null);
   const [summaryError, setSummaryError] = useState("");
-  const [expandedInquiryId, setExpandedInquiryId] = useState(null);
+  const sequence = useRef(0);
 
-  const loadInquiries = useCallback(async (requestedPage = page) => {
+  const loadInquiries = useCallback(async () => {
+    const requestId = ++sequence.current;
     setResult((current) => ({ ...current, status: "loading" }));
-    setErrorMessage("");
+    setError("");
     try {
-      const data = await getMyInquiries({ page: requestedPage });
-      setResult({ status: "success", ...data });
-    } catch (error) {
-      setResult((current) => ({ ...current, status: "error" }));
-      setErrorMessage(getApiErrorMessage(error));
+      const data = await getMyInquiries({ page, pageSize: 20 });
+      if (sequence.current === requestId) setResult({ status: "success", ...data });
+    } catch (requestError) {
+      if (sequence.current !== requestId) return;
+      setResult({ status: "error", items: [], meta: null });
+      setError(getApiErrorMessage(requestError));
     }
   }, [page]);
 
-  const loadUnreadSummary = useCallback(async () => {
+  const loadSummary = useCallback(async () => {
     try {
-      setUnreadSummary(await getInquiryUnreadSummary());
+      setSummary(await getInquiryUnreadSummary());
       setSummaryError("");
-    } catch (error) {
-      setSummaryError(getApiErrorMessage(error));
+    } catch (requestError) {
+      setSummaryError(getApiErrorMessage(requestError));
     }
   }, []);
 
-  const handleThreadUpdated = useCallback(async ({ inquiryId, status, unreadMessageCount }) => {
-    setResult((current) => ({
-      ...current,
-      items: current.items.map((inquiry) => inquiry.id === inquiryId
-        ? { ...inquiry, status, unreadMessageCount }
-        : inquiry),
-    }));
-    await loadUnreadSummary();
-  }, [loadUnreadSummary]);
-
   useEffect(() => {
-    if (!isAuthLoading && isAuthenticated) {
-      loadInquiries(page);
-      loadUnreadSummary();
+    if (isAuthenticated && !isAuthLoading) {
+      void loadInquiries();
+      void loadSummary();
     }
-  }, [isAuthLoading, isAuthenticated, loadInquiries, loadUnreadSummary, page]);
+  }, [isAuthenticated, isAuthLoading, loadInquiries, loadSummary]);
 
-  if (isAuthLoading) {
-    return <div className="page-shell"><p className="muted" role="status">Checking your sign-in status…</p></div>;
-  }
+  if (isAuthLoading) return <div className="page-shell"><p className="muted" role="status">Checking your sign-in status…</p></div>;
   if (!isAuthenticated) {
-    return (
-      <div className="page-shell">
-        <section className="workspace-state">
-          <h1>Sign in to see your inquiries</h1>
-          <p className="muted">Your inquiry history is available after you sign in.</p>
-          <Link className="button" to="/login">Sign in</Link>
-        </section>
-      </div>
-    );
+    return <div className="page-shell"><section className="workspace-state"><h1>Sign in to view My Inquiries</h1><p className="muted">Your buyer inquiry history is available after you sign in.</p><Link className="button" to="/login">Sign in</Link></section></div>;
   }
 
-  const totalPages = Number(result.meta?.totalPages) || 1;
+  const items = result.items || [];
+  const buyerUnread = summary?.buyer;
+  const totalPages = Math.max(1, Number(result.meta?.totalPages) || 1);
 
   return (
     <div className="page-shell workspace-page">
       <div className="workspace-heading">
-        <div>
-          <p className="eyebrow">Buyer workspace</p>
-          <h1>My Inquiries</h1>
-          <p className="muted">Keep track of the messages you have sent to sellers.</p>
-        </div>
+        <div><p className="eyebrow">Buyer workspace</p><h1>My Inquiries</h1><p className="muted">Conversations you started with sellers.</p></div>
         <Link to="/" className="button button--small">Explore listings</Link>
       </div>
-      {unreadSummary && (
-        <p className="workspace-unread-summary" role="status">
-          <strong>Unread seller replies:</strong> {unreadSummary.buyer.threads} conversation{unreadSummary.buyer.threads === 1 ? "" : "s"} · {unreadSummary.buyer.messages} message{unreadSummary.buyer.messages === 1 ? "" : "s"}
-        </p>
-      )}
-      {summaryError && <p className="form-alert" role="alert">Unread counts could not be refreshed: {summaryError}</p>}
-      {errorMessage && <p className="form-alert" role="alert">{errorMessage}</p>}
+      {buyerUnread && <p className="workspace-unread-summary" role="status"><strong>Unread seller replies:</strong> {buyerUnread.threads} conversation{buyerUnread.threads === 1 ? "" : "s"} · {buyerUnread.messages} message{buyerUnread.messages === 1 ? "" : "s"}</p>}
+      {summaryError && <p className="form-alert" role="alert">Unread reply totals could not be refreshed: {summaryError}</p>}
+      {error && <p className="form-alert" role="alert">{error}</p>}
       {result.status === "loading" && <p className="muted" role="status">Loading your inquiries…</p>}
-      {result.status === "error" && (
-        <button className="button button--secondary" type="button" onClick={() => loadInquiries(page)}>Try again</button>
-      )}
-      {result.status === "success" && result.items.length === 0 && (
-        <section className="workspace-state">
-          <h2>No inquiries yet</h2>
-          <p className="muted">When you contact a seller, your inquiry and its status will be listed here.</p>
-          <Link className="button" to="/">Explore listings</Link>
+      {result.status === "error" && <button className="button button--secondary" type="button" onClick={() => void loadInquiries()}>Try again</button>}
+      {result.status === "success" && items.length === 0 && <section className="workspace-state"><h2>No inquiries yet</h2><p className="muted">When you contact a seller, the conversation will appear here.</p><Link className="button" to="/">Explore listings</Link></section>}
+      {result.status === "success" && items.length > 0 && <>
+        <section className="workspace-inquiry-list" aria-label="Your inquiries">
+          {items.map((inquiry) => {
+            const listing = inquiry.listing;
+            const listingState = getBuyerInquiryListingState(listing);
+            const messagesParams = new URLSearchParams({ filter: "buying", inquiryId: inquiry.id });
+            if (listing?.id) messagesParams.set("listingId", listing.id);
+            return <article className="workspace-buyer-inquiry" key={inquiry.id}>
+              {listing?.imageUrl ? <img className="workspace-buyer-inquiry__image" src={listing.imageUrl} alt={listing.title || "Listing"} /> : <div className="workspace-buyer-inquiry__image workspace-listing__image--empty">No image</div>}
+              <div className="workspace-buyer-inquiry__content">
+                <div className="workspace-listing__heading"><div><p className="eyebrow">{listing?.category || "Marketplace listing"}{listing?.status ? ` · ${listing.status.toLowerCase()}` : ""}</p><h2>{listing?.title || "Listing details unavailable"}</h2></div><span className="workspace-status">{inquiry.status?.toLowerCase() || "open"}</span></div>
+                <p className="muted">Seller: {inquiry.seller?.name || "MUT Market seller"}</p>
+                {inquiry.seller?.id && <Link className="text-link" to={`/sellers/${encodeURIComponent(inquiry.seller.id)}`}>View seller profile</Link>}
+                <p className="muted">Started {formatDate(inquiry.createdAt)} · Latest activity {formatDate(inquiry.latestMessageAt || inquiry.updatedAt)}</p>
+                <p className={inquiry.sellerHasReplied ? "inquiry-reply-status inquiry-reply-status--replied" : "inquiry-reply-status"}>{inquiry.sellerHasReplied ? "Seller has replied" : "Waiting for seller reply"}</p>
+                {inquiry.unreadMessageCount > 0 && <span className="workspace-unread-badge" aria-label={`${inquiry.unreadMessageCount} unread seller messages`}>{inquiry.unreadMessageCount} unread seller message{inquiry.unreadMessageCount === 1 ? "" : "s"}</span>}
+                {listingState.href
+                  ? <Link className="text-link" to={listingState.href}>View listing</Link>
+                  : <p className="workspace-unavailable" role="status">{listingState.message}</p>}
+                <p className="workspace-inquiry__message">{inquiry.latestMessage || inquiry.message || "No messages yet."}</p>
+                <div className="workspace-actions"><Link className="button button--secondary" to={`/messages?${messagesParams.toString()}`}>Open in Messages</Link></div>
+              </div>
+            </article>;
+          })}
         </section>
-      )}
-      {result.status === "success" && result.items.length > 0 && (
-        <>
-          <div className="workspace-inquiry-list">
-            {result.items.map((inquiry) => {
-              const listing = inquiry.listing;
-              const isAvailable = listing?.status === "PUBLISHED";
-              return (
-                <article className="workspace-buyer-inquiry" key={inquiry.id}>
-                  {listing?.imageUrl
-                    ? <img className="workspace-buyer-inquiry__image" src={listing.imageUrl} alt={listing.title || "Listing"} />
-                    : <div className="workspace-buyer-inquiry__image workspace-listing__image--empty" aria-label="No listing image available">No image</div>}
-                  <div className="workspace-buyer-inquiry__content">
-                    <div className="workspace-listing__heading">
-                      <div>
-                        <p className="eyebrow">{listing?.category || "Marketplace listing"}{listing?.status ? ` · ${listing.status.toLowerCase()}` : ""}</p>
-                        <h2>{listing?.title || "Listing details unavailable"}</h2>
-                      </div>
-                      <StatusBadge status={inquiry.status} />
-                    </div>
-                    <p className="muted">Sent {formatDate(inquiry.createdAt)}</p>
-                    <p className="workspace-inquiry__message">{inquiry.message}</p>
-                    {listing?.seller?.id && (
-                      <Link className="text-link" to={`/sellers/${encodeURIComponent(listing.seller.id)}`}>
-                        View seller profile
-                      </Link>
-                    )}
-                    {listing?.status === "SOLD" || listing?.status === "REMOVED" ? (
-                      <p className="workspace-unavailable" role="status">This listing is {listing.status.toLowerCase()}; your inquiry history is still available.</p>
-                    ) : isAvailable ? (
-                      <Link className="text-link" to={`/listing/${encodeURIComponent(listing.id)}`}>View listing</Link>
-                    ) : (
-                      <p className="workspace-unavailable" role="status">This listing is not currently available to view.</p>
-                    )}
-                    <div className="workspace-actions workspace-inquiry__conversation-action">
-                      <button
-                        className="button button--secondary"
-                        type="button"
-                        aria-expanded={expandedInquiryId === inquiry.id}
-                        onClick={() => setExpandedInquiryId((current) => current === inquiry.id ? null : inquiry.id)}
-                      >
-                        {expandedInquiryId === inquiry.id ? "Hide conversation" : "Open conversation"}
-                      </button>
-                      {inquiry.unreadMessageCount > 0 && (
-                        <span className="workspace-unread-badge" aria-label={`${inquiry.unreadMessageCount} unread messages`}>
-                          {inquiry.unreadMessageCount} unread
-                        </span>
-                      )}
-                    </div>
-                    {expandedInquiryId === inquiry.id && listing?.id && (
-                      <InquiryConversation
-                        listingId={listing.id}
-                        inquiryId={inquiry.id}
-                        onThreadUpdated={handleThreadUpdated}
-                      />
-                    )}
-                  </div>
-                </article>
-              );
-            })}
-          </div>
-          {totalPages > 1 && (
-            <nav className="workspace-pagination" aria-label="Inquiry pages">
-              <button className="button button--secondary" type="button" disabled={page <= 1 || result.status === "loading"} onClick={() => setPage((current) => current - 1)}>Previous</button>
-              <span>Page {result.meta.page || page} of {totalPages}</span>
-              <button className="button button--secondary" type="button" disabled={page >= totalPages || result.status === "loading"} onClick={() => setPage((current) => current + 1)}>Next</button>
-            </nav>
-          )}
-        </>
-      )}
+        {totalPages > 1 && <nav className="workspace-pagination" aria-label="My Inquiries pages"><button className="button button--secondary" type="button" disabled={page <= 1 || result.status === "loading"} onClick={() => { const next = new URLSearchParams(searchParams); next.set("page", String(page - 1)); next.delete("inquiryId"); setSearchParams(next); }}>Previous</button><span>Page {result.meta.page || page} of {totalPages}</span><button className="button button--secondary" type="button" disabled={page >= totalPages || result.status === "loading"} onClick={() => { const next = new URLSearchParams(searchParams); next.set("page", String(page + 1)); next.delete("inquiryId"); setSearchParams(next); }}>Next</button></nav>}
+      </>}
     </div>
   );
 }
