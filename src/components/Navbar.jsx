@@ -2,11 +2,16 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import apiClient from "../services/apiClient";
+import {
+  getUnreadInquiryCounts,
+  subscribeToInquiryUnreadSummary,
+} from "../services/listingService";
 
 export default function Navbar() {
   const navigate = useNavigate();
   const { isAuthenticated, user, setUser } = useAuth();
   const [menuOpen, setMenuOpen] = useState(false);
+  const [unreadSummary, setUnreadSummary] = useState(null);
   const menuRef = useRef(null);
 
   useEffect(() => {
@@ -20,6 +25,10 @@ export default function Navbar() {
     document.addEventListener("mousedown", handleDocumentClick);
     return () => document.removeEventListener("mousedown", handleDocumentClick);
   }, []);
+
+  useEffect(() => {
+    return subscribeToInquiryUnreadSummary(isAuthenticated, setUnreadSummary);
+  }, [isAuthenticated, user?.id]);
 
   const initials = useMemo(() => {
     const source = user?.email?.trim() || "MU";
@@ -43,6 +52,8 @@ export default function Navbar() {
     }
   };
 
+  const { threads: unreadThreadCount, messages: unreadMessageCount } = getUnreadInquiryCounts(unreadSummary);
+
   return (
     <nav className="site-nav" aria-label="Main navigation">
       <div className="site-nav__inner">
@@ -55,7 +66,18 @@ export default function Navbar() {
           <NavLink to="/post-item" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>Sell an item</NavLink>
           {isAuthenticated && <>
             <NavLink to="/my-listings" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>My Listings</NavLink>
-            <NavLink to="/my-inquiries" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>My Inquiries</NavLink>
+            <NavLink to="/my-inquiries" className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>
+              My Inquiries
+              {unreadThreadCount > 0 && (
+                <span
+                  className="nav-unread-badge"
+                  title={`${unreadThreadCount} unread inquiry threads, ${unreadMessageCount} unread messages`}
+                  aria-label={`${unreadThreadCount} unread inquiry threads and ${unreadMessageCount} unread messages`}
+                >
+                  {unreadThreadCount}
+                </span>
+              )}
+            </NavLink>
           </>}
         </div>
         <div className="site-nav__actions">

@@ -42,7 +42,7 @@ export default function SellerProfile() {
   }, [listingId, sellerId]);
 
   if (state.status === "loading") return <div className="page-shell"><p role="status">Loading seller profile...</p></div>;
-  if (state.status !== "found") return <div className="page-shell"><Link className="text-link" to={backPath}>← Back to listing</Link><h1>{state.status === "missing" ? "Seller unavailable" : "Unable to load profile"}</h1><p role="alert">{state.message}</p></div>;
+  if (state.status !== "found") return <div className="page-shell"><Link className="text-link" to={backPath}>← Back to listing</Link><h1>{state.status === "missing" ? "Member unavailable" : "Unable to load profile"}</h1><p role="alert">{state.message}</p></div>;
 
   const { profile } = state;
   const phone = normalizeWhatsAppNumber(profile.phoneNumber);
@@ -53,11 +53,11 @@ export default function SellerProfile() {
       <Link className="text-link" to={backPath}>← Back to listing</Link>
       <section className="profile-card seller-profile__card">
         {profile.avatarUrl && <img className="seller-profile__avatar" src={profile.avatarUrl} alt="" />}
-        <p className="eyebrow">Seller profile</p>
+        <p className="eyebrow">MUT Market member</p>
         <h1>{profile.name}</h1>
         {profile.description && <p className="seller-profile__description">{profile.description}</p>}
         <div className="seller-profile__contacts">
-          {isValidWhatsAppNumber(phone) && <a className="button button--secondary" href={`tel:+${phone}`}>Call seller</a>}
+          {isValidWhatsAppNumber(phone) && <a className="button button--secondary" href={`tel:+${phone}`}>Call member</a>}
           {whatsappUrl && <a className="button" href={whatsappUrl} target="_blank" rel="noopener noreferrer">Message on WhatsApp</a>}
           {!isValidWhatsAppNumber(phone) && !whatsappUrl && <p className="muted">This seller has not added public contact details.</p>}
         </div>

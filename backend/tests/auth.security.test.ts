@@ -50,7 +50,7 @@ const {
   verifyEmail,
 } = await import("../src/modules/auth/auth.service.js");
 const { assertSellerAuthorized } = await import("../src/modules/verification/verification.service.js");
-const { hashToken, createOpaqueToken } = await import("../src/modules/auth/auth.utils.js");
+const { hashToken, createOpaqueToken, verifyPassword } = await import("../src/modules/auth/auth.utils.js");
 const { AppError } = await import("../src/app/errors.js");
 const app = buildApp();
 
@@ -218,6 +218,10 @@ test("password reset revokes active sessions and accepts the new password", asyn
     const newPassword = "new-password-1234567";
     await resetPassword({ token: resetToken, password: newPassword });
 
+    const consumedToken = await prisma.passwordResetToken.findUniqueOrThrow({
+      where: { tokenHash: hashToken(resetToken) },
+    });
+    assert.ok(consumedToken.consumedAt);
     assert.equal(await getSessionUser(sessionHash), null);
     const authenticated = await authenticate({
       email,
@@ -225,6 +229,143 @@ test("password reset revokes active sessions and accepts the new password", asyn
       password: newPassword,
     });
     assert.equal(authenticated.user.email, email);
+  } finally {
+    await cleanupTestUser(email);
+  }
+});
+
+test("password reset tokens can only be redeemed once", async () => {
+  const email = `test-password-reset-reuse-${randomUUID()}@example.test`;
+  await cleanupTestUser(email);
+
+  try {
+    const user = await register({
+      email,
+      password: "original-password-12345",
+      displayName: "Test User",
+    });
+    const resetToken = createOpaqueToken();
+    await prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: hashToken(resetToken),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+
+    const firstPassword = "first-reset-password-12345";
+    const rejectedPassword = "rejected-reset-password-12345";
+    await resetPassword({ token: resetToken, password: firstPassword });
+
+    await assert.rejects(
+      () => resetPassword({ token: resetToken, password: rejectedPassword }),
+      (error) => error instanceof AppError && error.code === "INVALID_RESET_TOKEN",
+    );
+
+    const persistedUser = await prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+    });
+    const persistedToken = await prisma.passwordResetToken.findUniqueOrThrow({
+      where: { tokenHash: hashToken(resetToken) },
+    });
+    assert.equal(await verifyPassword(persistedUser.passwordHash, firstPassword), true);
+    assert.equal(await verifyPassword(persistedUser.passwordHash, rejectedPassword), false);
+    assert.ok(persistedToken.consumedAt);
+  } finally {
+    await cleanupTestUser(email);
+  }
+});
+
+test("expired password reset tokens are rejected without changing the password", async () => {
+  const email = `test-password-reset-expired-${randomUUID()}@example.test`;
+  await cleanupTestUser(email);
+
+  try {
+    const originalPassword = "original-password-12345";
+    const user = await register({
+      email,
+      password: originalPassword,
+      displayName: "Test User",
+    });
+    const resetToken = createOpaqueToken();
+    await prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: hashToken(resetToken),
+        expiresAt: new Date(Date.now() - 60_000),
+      },
+    });
+
+    await assert.rejects(
+      () => resetPassword({ token: resetToken, password: "rejected-reset-password-12345" }),
+      (error) => error instanceof AppError && error.code === "INVALID_RESET_TOKEN",
+    );
+
+    const persistedUser = await prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+    });
+    const persistedToken = await prisma.passwordResetToken.findUniqueOrThrow({
+      where: { tokenHash: hashToken(resetToken) },
+    });
+    assert.equal(await verifyPassword(persistedUser.passwordHash, originalPassword), true);
+    assert.equal(persistedToken.consumedAt, null);
+  } finally {
+    await cleanupTestUser(email);
+  }
+});
+
+test("concurrent password reset requests redeem a token exactly once", async () => {
+  const email = `test-password-reset-concurrent-${randomUUID()}@example.test`;
+  await cleanupTestUser(email);
+
+  try {
+    const user = await register({
+      email,
+      password: "original-password-12345",
+      displayName: "Test User",
+    });
+    const resetToken = createOpaqueToken();
+    await prisma.passwordResetToken.create({
+      data: {
+        userId: user.id,
+        tokenHash: hashToken(resetToken),
+        expiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const candidatePasswords = [
+      "concurrent-reset-password-one",
+      "concurrent-reset-password-two",
+    ];
+
+    const results = await Promise.allSettled(
+      candidatePasswords.map((password) => resetPassword({ token: resetToken, password })),
+    );
+    const successfulIndexes = results.flatMap((result, index) =>
+      result.status === "fulfilled" ? [index] : [],
+    );
+    const rejectedResults = results.filter(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+
+    assert.equal(successfulIndexes.length, 1);
+    assert.equal(rejectedResults.length, 1);
+    assert.ok(
+      rejectedResults[0]?.reason instanceof AppError &&
+      rejectedResults[0].reason.code === "INVALID_RESET_TOKEN",
+    );
+
+    const persistedUser = await prisma.user.findUniqueOrThrow({
+      where: { id: user.id },
+    });
+    const persistedToken = await prisma.passwordResetToken.findUniqueOrThrow({
+      where: { tokenHash: hashToken(resetToken) },
+    });
+    const winnerPassword = candidatePasswords[successfulIndexes[0]!]!;
+    const loserPassword = candidatePasswords[1 - successfulIndexes[0]!]!;
+
+    assert.ok(persistedToken.consumedAt);
+    assert.equal(await verifyPassword(persistedUser.passwordHash, winnerPassword), true);
+    assert.equal(await verifyPassword(persistedUser.passwordHash, loserPassword), false);
   } finally {
     await cleanupTestUser(email);
   }

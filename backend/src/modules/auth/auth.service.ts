@@ -426,22 +426,32 @@ export async function resetPassword(
 
   const passwordHash = await hashPassword(input.password);
 
-  await prisma.$transaction([
-    prisma.passwordResetToken.update({
-      where: { id: record.id },
-      data: {
-        consumedAt: new Date(),
+  await prisma.$transaction(async (transaction) => {
+    const consumedAt = new Date();
+    const consumed = await transaction.passwordResetToken.updateMany({
+      where: {
+        id: record.id,
+        tokenHash: hashToken(input.token),
+        consumedAt: null,
+        expiresAt: { gt: consumedAt },
       },
-    }),
+      data: { consumedAt },
+    });
 
-    prisma.user.update({
+    if (consumed.count !== 1) {
+      throw new AppError(
+        400,
+        "INVALID_RESET_TOKEN",
+        "The password reset link is invalid or expired.",
+      );
+    }
+
+    await transaction.user.update({
       where: { id: record.userId },
-      data: {
-        passwordHash,
-      },
-    }),
+      data: { passwordHash },
+    });
 
-    prisma.session.updateMany({
+    await transaction.session.updateMany({
       where: {
         userId: record.userId,
         revokedAt: null,
@@ -449,8 +459,8 @@ export async function resetPassword(
       data: {
         revokedAt: new Date(),
       },
-    }),
-  ]);
+    });
+  }, { timeout: 30_000 });
 }
 
 export async function changePassword(

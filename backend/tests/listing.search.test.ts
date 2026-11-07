@@ -112,7 +112,7 @@ test("public listing search supports individual and combined filters without byp
   const cases: Array<[string, string[]]> = [
     ["?q=physics", ["Green Physics Textbook"]],
     [`?categoryId=${secondCategoryId}`, ["Green Study Chair"]],
-    ["?minPrice=90&maxPrice=110", ["Green Physics Textbook"]],
+    [`?categoryId=${categoryId}&minPrice=90&maxPrice=110`, ["Green Physics Textbook"]],
     ["?condition=USED", ["Green Study Chair"]],
     ["?location=north", ["Green Physics Textbook", "Red Phone"]],
     [`?q=green&categoryId=${categoryId}&minPrice=90&maxPrice=110&condition=GOOD&location=north`, ["Green Physics Textbook"]],

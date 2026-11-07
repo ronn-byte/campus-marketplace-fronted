@@ -89,6 +89,31 @@ async function createListing(
   return listing;
 }
 
+async function createTestInquiry(input: {
+  listingId: string;
+  buyerId: string;
+  message: string;
+  status?: "OPEN" | "RESPONDED" | "CLOSED";
+}) {
+  const inquiry = await prisma.listingInquiry.create({
+    data: {
+      listingId: input.listingId,
+      buyerId: input.buyerId,
+      status: input.status ?? "OPEN",
+    },
+  });
+  await prisma.listingInquiryMessage.create({
+    data: {
+      inquiryId: inquiry.id,
+      sender: "BUYER",
+      content: input.message,
+      sequence: 1,
+      readAt: inquiry.createdAt,
+    },
+  });
+  return inquiry;
+}
+
 function collectObjectKeys(value: unknown): string[] {
   if (Array.isArray(value)) return value.flatMap(collectObjectKeys);
   if (!value || typeof value !== "object") return [];
@@ -96,6 +121,18 @@ function collectObjectKeys(value: unknown): string[] {
     key,
     ...collectObjectKeys(nested),
   ]);
+}
+
+function getSafeResponseDiagnostics(response: { statusCode: number; json: () => unknown }) {
+  const body = response.json() as { error?: { code?: unknown; message?: unknown } };
+  const code = typeof body.error?.code === "string" ? body.error.code : null;
+  const message = typeof body.error?.message === "string" ? body.error.message : "";
+
+  return {
+    status: response.statusCode,
+    applicationErrorCode: code && !/^P\d{4}$/.test(code) ? code : null,
+    prismaErrorCode: code?.match(/^P\d{4}$/)?.[0] ?? message.match(/\bP\d{4}\b/)?.[0] ?? null,
+  };
 }
 
 before(async () => {
@@ -398,6 +435,7 @@ test("listing inquiry retrieval is authenticated, owner-only, and returns safe b
     assert.equal(body.inquiries[0].message, "Could I pick this up tomorrow?");
     assert.equal(body.inquiries[0].status, "OPEN");
     assert.deepEqual(Object.keys(body.inquiries[0].buyer).sort(), [
+      "id",
       "name",
       "verified",
     ]);
@@ -462,38 +500,39 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
   const administratorBuyer = await createActor({ role: Role.ADMINISTRATOR });
   const unconfirmedBuyer = await createActor({ emailVerified: false });
 
-  await createListing(sellerA.user.id, ListingStatus.DRAFT);
+  const draft = await createListing(sellerA.user.id, ListingStatus.DRAFT);
   const published = await createListing(sellerA.user.id, ListingStatus.PUBLISHED);
   await createListing(sellerA.user.id, ListingStatus.RESERVED);
   const sold = await createListing(sellerA.user.id, ListingStatus.SOLD);
   await createListing(sellerA.user.id, ListingStatus.SUSPENDED);
   await createListing(sellerA.user.id, ListingStatus.REMOVED);
 
-  await prisma.listingInquiry.create({
+  const firstPublishedInquiry = await createTestInquiry({
+    listingId: published.id,
+    buyerId: buyerA.user.id,
+    message: "Need to know if it is still available.",
+  });
+
+  await prisma.listingInquiryMessage.create({
     data: {
-      listingId: published.id,
-      buyerId: buyerA.user.id,
-      message: "Need to know if it is still available.",
-      status: "OPEN",
+      inquiryId: firstPublishedInquiry.id,
+      sender: "SELLER",
+      content: "Yes, it is still available.",
+      sequence: 2,
     },
   });
 
-  await prisma.listingInquiry.create({
-    data: {
-      listingId: sold.id,
-      buyerId: buyerA.user.id,
-      message: "Historical inquiry after sale.",
-      status: "CLOSED",
-    },
+  await createTestInquiry({
+    listingId: sold.id,
+    buyerId: buyerA.user.id,
+    message: "Historical inquiry after sale.",
+    status: "CLOSED",
   });
 
-  await prisma.listingInquiry.create({
-    data: {
-      listingId: published.id,
-      buyerId: administratorBuyer.user.id,
-      message: "Administrator-role buyer inquiry.",
-      status: "OPEN",
-    },
+  await createTestInquiry({
+    listingId: published.id,
+    buyerId: administratorBuyer.user.id,
+    message: "Administrator-role buyer inquiry.",
   });
 
   await t.test("seller listing retrieval is authenticated and scoped to request.user.id", async () => {
@@ -510,6 +549,27 @@ test("seller listing retrieval and buyer inquiry retrieval respect ownership and
     assert.equal(ownListings.json().meta.pageSize, 3);
     assert.equal(ownListings.json().items.length, 3);
     assert.equal(ownListings.json().items.every((item: { status: string }) => item.status), true);
+
+    const listingCounts = await app.inject({
+      method: "GET",
+      url: "/api/v1/listings/me?page=1&pageSize=10",
+      headers: authHeaders(sellerA.sessionToken),
+    });
+    assert.equal(listingCounts.statusCode, 200);
+    const listingCountsById = new Map<string, number>(
+      listingCounts.json().items.map((item: { id: string; inquiryCount: number }) => [
+        item.id,
+        item.inquiryCount,
+      ] as const),
+    );
+    assert.equal(listingCountsById.get(published.id), 2);
+    assert.equal(listingCountsById.get(sold.id), 1);
+    assert.equal(listingCountsById.get(draft.id), 0);
+    assert.equal(
+      Object.keys(listingCounts.json().items.find((item: { id: string }) => item.id === published.id) ?? {})
+        .includes("inquiries"),
+      false,
+    );
 
     const forbiddenQuery = await app.inject({
       method: "GET",
@@ -576,13 +636,10 @@ test("seller inquiry status transitions and lifecycle interactions are enforced"
   const buyer = await createActor({ verificationStatus: VerificationStatus.APPROVED });
   const listing = await createListing(seller.user.id, ListingStatus.PUBLISHED);
 
-  const inquiry = await prisma.listingInquiry.create({
-    data: {
-      listingId: listing.id,
-      buyerId: buyer.user.id,
-      message: "Can you confirm availability?",
-      status: "OPEN",
-    },
+  const inquiry = await createTestInquiry({
+    listingId: listing.id,
+    buyerId: buyer.user.id,
+    message: "Can you confirm availability?",
   });
 
   await t.test("seller with unconfirmed email cannot update inquiry status", async () => {
@@ -625,13 +682,11 @@ test("seller inquiry status transitions and lifecycle interactions are enforced"
     });
     assert.equal(repeatedClosed.statusCode, 409);
 
-    const respondedInquiry = await prisma.listingInquiry.create({
-      data: {
-        listingId: listing.id,
-        buyerId: buyer.user.id,
-        message: "Another inquiry.",
-        status: "RESPONDED",
-      },
+    const respondedInquiry = await createTestInquiry({
+      listingId: listing.id,
+      buyerId: buyer.user.id,
+      message: "Another inquiry.",
+      status: "RESPONDED",
     });
 
     const reopened = await app.inject({
@@ -655,13 +710,10 @@ test("seller inquiry status transitions and lifecycle interactions are enforced"
     const lifecycleBuyer = await createActor({ verificationStatus: VerificationStatus.APPROVED });
     const lifecycleSeller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
     const lifecycleListing = await createListing(lifecycleSeller.user.id, ListingStatus.PUBLISHED);
-    const lifecycleInquiry = await prisma.listingInquiry.create({
-      data: {
-        listingId: lifecycleListing.id,
-        buyerId: lifecycleBuyer.user.id,
-        message: "Prior inquiry.",
-        status: "OPEN",
-      },
+    const lifecycleInquiry = await createTestInquiry({
+      listingId: lifecycleListing.id,
+      buyerId: lifecycleBuyer.user.id,
+      message: "Prior inquiry.",
     });
 
     for (const nextStatus of [ListingStatus.RESERVED, ListingStatus.SOLD, ListingStatus.REMOVED]) {
@@ -686,6 +738,194 @@ test("seller inquiry status transitions and lifecycle interactions are enforced"
       assert.ok(sellerResponse.json().inquiries.some((inquiry: { id: string }) => inquiry.id === lifecycleInquiry.id));
     }
   });
+});
+
+test("inquiry conversations enforce participant access, read state, and sender caps", async () => {
+  const seller = await createActor({ verificationStatus: VerificationStatus.APPROVED });
+  const buyer = await createActor();
+  const unrelated = await createActor();
+  const listing = await createListing(seller.user.id);
+  const created = await app.inject({
+    method: "POST",
+    url: `/api/v1/listings/${listing.id}/inquiries`,
+    headers: authHeaders(buyer.sessionToken),
+    payload: { message: "Is this still available?" },
+  });
+  assert.equal(created.statusCode, 201);
+
+  const inquiry = await prisma.listingInquiry.findFirstOrThrow({
+    where: { listingId: listing.id, buyerId: buyer.user.id },
+  });
+  const threadUrl = `/api/v1/listings/${listing.id}/inquiries/${inquiry.id}/messages`;
+  const readUrl = `/api/v1/listings/${listing.id}/inquiries/${inquiry.id}/read`;
+
+  const unauthenticated = await app.inject({ method: "GET", url: threadUrl });
+  assert.equal(unauthenticated.statusCode, 401);
+
+  const unrelatedRead = await app.inject({
+    method: "GET",
+    url: threadUrl,
+    headers: authHeaders(unrelated.sessionToken),
+  });
+  assert.equal(unrelatedRead.statusCode, 404);
+
+  const unrelatedSend = await app.inject({
+    method: "POST",
+    url: threadUrl,
+    headers: authHeaders(unrelated.sessionToken),
+    payload: { content: "Unauthorized message." },
+  });
+  assert.equal(unrelatedSend.statusCode, 404);
+
+  const unrelatedMarkRead = await app.inject({
+    method: "POST",
+    url: readUrl,
+    headers: authHeaders(unrelated.sessionToken),
+  });
+  assert.equal(unrelatedMarkRead.statusCode, 404);
+
+  const buyerThread = await app.inject({
+    method: "GET",
+    url: threadUrl,
+    headers: authHeaders(buyer.sessionToken),
+  });
+  assert.equal(buyerThread.statusCode, 200);
+  assert.equal(buyerThread.json().thread.viewerRole, "BUYER");
+  assert.equal(buyerThread.json().thread.messages.length, 1);
+  assert.equal(buyerThread.json().thread.messages[0].sender, "BUYER");
+  assert.equal(buyerThread.json().thread.messageAllowance.sent, 1);
+  assert.equal(buyerThread.json().thread.messageAllowance.remaining, 2);
+
+  const buyerUnreadBeforeReply = await app.inject({
+    method: "GET",
+    url: "/api/v1/inquiries/unread-summary",
+    headers: authHeaders(buyer.sessionToken),
+  });
+  assert.deepEqual(buyerUnreadBeforeReply.json().summary.buyer, { threads: 0, messages: 0 });
+
+  const initialUnread = await app.inject({
+    method: "GET",
+    url: "/api/v1/inquiries/unread-summary",
+    headers: authHeaders(seller.sessionToken),
+  });
+  assert.equal(initialUnread.statusCode, 200, JSON.stringify(getSafeResponseDiagnostics(initialUnread)));
+  assert.deepEqual(initialUnread.json().summary.seller, { threads: 1, messages: 1 });
+
+  const sellerRead = await app.inject({
+    method: "POST",
+    url: readUrl,
+    headers: authHeaders(seller.sessionToken),
+  });
+  assert.equal(sellerRead.statusCode, 200);
+  assert.equal(sellerRead.json().updatedCount, 1);
+
+  const sellerUnreadAfterRead = await app.inject({
+    method: "GET",
+    url: "/api/v1/inquiries/unread-summary",
+    headers: authHeaders(seller.sessionToken),
+  });
+  assert.deepEqual(sellerUnreadAfterRead.json().summary.seller, { threads: 0, messages: 0 });
+
+  for (const payload of [
+    { content: "" },
+    { content: "   " },
+    { content: "x".repeat(2001) },
+    { content: "Valid text", sender: "BUYER" },
+  ]) {
+    const invalidMessage = await app.inject({
+      method: "POST",
+      url: threadUrl,
+      headers: authHeaders(seller.sessionToken),
+      payload,
+    });
+    assert.equal(invalidMessage.statusCode, 422);
+  }
+
+  const sellerReplies = await Promise.all(
+    Array.from({ length: 4 }, (_, index) => app.inject({
+      method: "POST",
+      url: threadUrl,
+      headers: authHeaders(seller.sessionToken),
+      payload: { content: `Seller reply ${index + 1}` },
+    })),
+  );
+  const persistedSellerMessageCount = await prisma.listingInquiryMessage.count({
+    where: { inquiryId: inquiry.id, sender: "SELLER" },
+  });
+  const sellerReplyDiagnostics = sellerReplies.map((response) => {
+    return getSafeResponseDiagnostics(response);
+  });
+  const concurrencyDiagnostics = JSON.stringify({
+    responses: sellerReplyDiagnostics,
+    persistedSellerMessageCount,
+  });
+  assert.equal(sellerReplies.filter((response) => response.statusCode === 201).length, 3, concurrencyDiagnostics);
+  assert.equal(sellerReplies.filter((response) => response.statusCode === 409).length, 1, concurrencyDiagnostics);
+  assert.ok(sellerReplies.some((response) => response.json().error?.code === "INQUIRY_MESSAGE_LIMIT_REACHED"));
+  assert.equal(persistedSellerMessageCount, 3, concurrencyDiagnostics);
+
+  const responded = await prisma.listingInquiry.findUniqueOrThrow({
+    where: { id: inquiry.id },
+    select: { status: true },
+  });
+  assert.equal(responded.status, "RESPONDED");
+
+  const buyerUnread = await app.inject({
+    method: "GET",
+    url: "/api/v1/inquiries/unread-summary",
+    headers: authHeaders(buyer.sessionToken),
+  });
+  assert.deepEqual(buyerUnread.json().summary.buyer, { threads: 1, messages: 3 });
+
+  const buyerRead = await app.inject({
+    method: "POST",
+    url: readUrl,
+    headers: authHeaders(buyer.sessionToken),
+  });
+  assert.equal(buyerRead.statusCode, 200);
+  assert.equal(buyerRead.json().updatedCount, 3);
+
+  const buyerReplies = await Promise.all([
+    app.inject({
+      method: "POST",
+      url: threadUrl,
+      headers: authHeaders(buyer.sessionToken),
+      payload: { content: "Buyer follow-up one" },
+    }),
+    app.inject({
+      method: "POST",
+      url: threadUrl,
+      headers: authHeaders(buyer.sessionToken),
+      payload: { content: "Buyer follow-up two" },
+    }),
+  ]);
+  assert.ok(buyerReplies.every((response) => response.statusCode === 201));
+
+  const buyerLimit = await app.inject({
+    method: "POST",
+    url: threadUrl,
+    headers: authHeaders(buyer.sessionToken),
+    payload: { content: "Buyer follow-up three" },
+  });
+  assert.equal(buyerLimit.statusCode, 409);
+  assert.equal(buyerLimit.json().error.code, "INQUIRY_MESSAGE_LIMIT_REACHED");
+
+  const closed = await app.inject({
+    method: "PATCH",
+    url: `/api/v1/listings/${listing.id}/inquiries/${inquiry.id}`,
+    headers: authHeaders(seller.sessionToken),
+    payload: { status: "CLOSED" },
+  });
+  assert.equal(closed.statusCode, 200);
+
+  const closedThreadSend = await app.inject({
+    method: "POST",
+    url: threadUrl,
+    headers: authHeaders(seller.sessionToken),
+    payload: { content: "This must not be sent." },
+  });
+  assert.equal(closedThreadSend.statusCode, 409);
+  assert.equal(closedThreadSend.json().error.code, "INQUIRY_CLOSED");
 });
 
 test("withdrawing a published listing preserves history and blocks public access", async () => {

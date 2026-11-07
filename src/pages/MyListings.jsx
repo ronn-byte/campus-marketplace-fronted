@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
+import InquiryConversation from "../components/InquiryConversation";
 import { getApiErrorMessage } from "../services/apiClient";
 import {
+  getInquiryUnreadSummary,
   getListingInquiries,
   getMyListings,
   markListingSold,
@@ -38,7 +40,15 @@ function SignInPrompt() {
   );
 }
 
-function InquiryPanel({ listingId, data, onStatusChange, pendingInquiryId }) {
+function InquiryPanel({
+  listingId,
+  data,
+  onStatusChange,
+  pendingInquiryId,
+  expandedInquiryId,
+  onToggleConversation,
+  onThreadUpdated,
+}) {
   if (data?.status === "loading") {
     return <p className="muted" role="status">Loading inquiries…</p>;
   }
@@ -60,7 +70,34 @@ function InquiryPanel({ listingId, data, onStatusChange, pendingInquiryId }) {
             </div>
             <StatusBadge status={inquiry.status} />
           </div>
+          {inquiry.buyer?.id && (
+            <p className="workspace-inquiry__profile">
+              <Link className="text-link" to={`/sellers/${encodeURIComponent(inquiry.buyer.id)}`}>View buyer profile</Link>
+            </p>
+          )}
           <p className="workspace-inquiry__message">{inquiry.message}</p>
+          <div className="workspace-actions">
+            <button
+              className="button button--secondary"
+              type="button"
+              aria-expanded={expandedInquiryId === inquiry.id}
+              onClick={() => onToggleConversation(inquiry.id)}
+            >
+              {expandedInquiryId === inquiry.id ? "Hide conversation" : "Open conversation"}
+            </button>
+            {inquiry.unreadMessageCount > 0 && (
+              <span className="workspace-unread-badge" aria-label={`${inquiry.unreadMessageCount} unread messages`}>
+                {inquiry.unreadMessageCount} unread
+              </span>
+            )}
+          </div>
+          {expandedInquiryId === inquiry.id && (
+            <InquiryConversation
+              listingId={listingId}
+              inquiryId={inquiry.id}
+              onThreadUpdated={(update) => onThreadUpdated(listingId, update)}
+            />
+          )}
           {inquiry.status === "OPEN" && (
             <div className="workspace-actions">
               <button className="button button--quiet" type="button" disabled={pendingInquiryId === inquiry.id} onClick={() => onStatusChange(listingId, inquiry.id, "RESPONDED")}>
@@ -90,6 +127,9 @@ export default function MyListings() {
   const [pendingInquiryId, setPendingInquiryId] = useState(null);
   const [expandedListingId, setExpandedListingId] = useState(null);
   const [inquiriesByListing, setInquiriesByListing] = useState({});
+  const [expandedInquiryId, setExpandedInquiryId] = useState(null);
+  const [unreadSummary, setUnreadSummary] = useState(null);
+  const [summaryError, setSummaryError] = useState("");
 
   const loadListings = useCallback(async (requestedPage = page) => {
     setResult((current) => ({ ...current, status: "loading" }));
@@ -103,9 +143,21 @@ export default function MyListings() {
     }
   }, [page]);
 
+  const loadUnreadSummary = useCallback(async () => {
+    try {
+      setUnreadSummary(await getInquiryUnreadSummary());
+      setSummaryError("");
+    } catch (error) {
+      setSummaryError(getApiErrorMessage(error));
+    }
+  }, []);
+
   useEffect(() => {
-    if (!isAuthLoading && isAuthenticated) loadListings(page);
-  }, [isAuthLoading, isAuthenticated, loadListings, page]);
+    if (!isAuthLoading && isAuthenticated) {
+      loadListings(page);
+      loadUnreadSummary();
+    }
+  }, [isAuthLoading, isAuthenticated, loadListings, loadUnreadSummary, page]);
 
   const handleListingAction = async (listing, action, successMessage) => {
     if (pendingListingId === listing.id) return;
@@ -137,6 +189,7 @@ export default function MyListings() {
       return;
     }
     setExpandedListingId(listingId);
+    setExpandedInquiryId(null);
     setInquiriesByListing((current) => ({
       ...current,
       [listingId]: { status: "loading", items: [] },
@@ -153,6 +206,23 @@ export default function MyListings() {
         [listingId]: { status: "error", message: getApiErrorMessage(error), items: [] },
       }));
     }
+  };
+
+  const handleThreadUpdated = async (listingId, update) => {
+    setInquiriesByListing((current) => ({
+      ...current,
+      [listingId]: {
+        ...current[listingId],
+        items: (current[listingId]?.items || []).map((inquiry) => inquiry.id === update.inquiryId
+          ? {
+              ...inquiry,
+              status: update.status,
+              unreadMessageCount: update.unreadMessageCount,
+            }
+          : inquiry),
+      },
+    }));
+    await loadUnreadSummary();
   };
 
   const handleInquiryStatus = async (listingId, inquiryId, status) => {
@@ -213,6 +283,12 @@ export default function MyListings() {
         </div>
         <Link to="/post-item" className="button button--small">Sell an item</Link>
       </div>
+      {unreadSummary && (
+        <p className="workspace-unread-summary" role="status">
+          <strong>Unread buyer activity:</strong> {unreadSummary.seller.threads} conversation{unreadSummary.seller.threads === 1 ? "" : "s"} · {unreadSummary.seller.messages} message{unreadSummary.seller.messages === 1 ? "" : "s"}
+        </p>
+      )}
+      {summaryError && <p className="form-alert" role="alert">Unread counts could not be refreshed: {summaryError}</p>}
       {message && <p className="preview-note" role="status">{message}</p>}
       {pageError && <p className="form-alert" role="alert">{pageError}</p>}
       {result.status === "loading" && <p className="muted" role="status">Loading your listings…</p>}
@@ -281,6 +357,9 @@ export default function MyListings() {
                       <button className="button button--quiet" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, releaseListingReservation, "Reservation released.")}>{pendingListingId === listing.id ? "Updating…" : "Release reservation"}</button>
                       <button className="button button--secondary" type="button" disabled={pendingListingId === listing.id} onClick={() => handleListingAction(listing, markListingSold, "Listing marked as sold.")}>{pendingListingId === listing.id ? "Updating…" : "Mark as sold"}</button>
                     </>}
+                    <span className="muted" aria-label={`${listing.inquiryCount ?? 0} ${listing.inquiryCount === 1 ? "inquiry" : "inquiries"}`}>
+                      {listing.inquiryCount ?? 0} {listing.inquiryCount === 1 ? "inquiry" : "inquiries"}
+                    </span>
                     <button className="button button--secondary" type="button" aria-expanded={expandedListingId === listing.id} onClick={() => openInquiries(listing.id)}>
                       {expandedListingId === listing.id ? "Hide inquiries" : "View inquiries"}
                     </button>
@@ -293,6 +372,9 @@ export default function MyListings() {
                         data={inquiriesByListing[listing.id]}
                         onStatusChange={handleInquiryStatus}
                         pendingInquiryId={pendingInquiryId}
+                        expandedInquiryId={expandedInquiryId}
+                        onToggleConversation={(inquiryId) => setExpandedInquiryId((current) => current === inquiryId ? null : inquiryId)}
+                        onThreadUpdated={handleThreadUpdated}
                       />
                     </section>
                   )}

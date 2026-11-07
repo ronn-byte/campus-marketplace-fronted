@@ -80,7 +80,7 @@ export async function getPublicSellerProfile(userId: string, includeContactDetai
   });
   if (!user) throw new AppError(404, "SELLER_NOT_FOUND", "This seller profile is unavailable.");
   return {
-    name: user.profile?.nickname || user.studentProfile?.displayName || "MUT Market seller",
+    name: user.profile?.nickname || user.studentProfile?.displayName || "MUT Market member",
     avatarUrl: user.profile?.avatarUrl ?? null,
     description: user.profile?.bio ?? null,
     phoneNumber: includeContactDetails ? (user.profile?.phoneNumber ?? null) : null,
