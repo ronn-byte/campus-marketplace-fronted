@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import CategorySection from "../components/CategorySection.jsx";
 import ListingCard from "../components/ListingCard";
 import { getListingCategories, getListings } from "../services/listingService";
 
@@ -343,11 +345,15 @@ function Home() {
 
         <section className="home-categories" aria-labelledby="categories-heading">
           <div className="section-heading"><h2 id="categories-heading">Browse categories</h2></div>
-          <div className="category-row" aria-label="Filter by category">
+          <div className="category-row" aria-label="Explore categories">
             <button type="button" aria-pressed={!appliedFilters.categoryId} className={`category-chip ${!appliedFilters.categoryId ? "category-chip--active" : ""}`} onClick={() => selectCategory("")}>All</button>
-            {categories.map((category) => <button key={category.id} type="button" aria-pressed={appliedFilters.categoryId === category.id} className={`category-chip ${appliedFilters.categoryId === category.id ? "category-chip--active" : ""}`} onClick={() => selectCategory(category.id)}>{category.name}</button>)}
+            {categories.map((category) => <Link key={category.id} className="category-chip" to={`/category/${encodeURIComponent(category.slug || category.id)}`}>{category.name}</Link>)}
           </div>
         </section>
+
+        <div className="home-category-sections" aria-label="Products by category">
+          {categories.map((category) => <CategorySection key={category.id} category={category} />)}
+        </div>
 
         <section id="recent-listings" aria-labelledby="listings-heading">
           <div className="section-heading">

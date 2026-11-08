@@ -17,6 +17,7 @@ import { AuthProvider } from "./context/AuthContext.jsx";
 import { FeedbackProvider } from "./context/FeedbackContext.jsx";
 import ResetPassword from "./pages/ResetPassword";
 import SellerProfile from "./pages/SellerProfile.jsx";
+import CategoryPage from "./pages/CategoryPage.jsx";
 
 function App() {
   return (
@@ -27,6 +28,7 @@ function App() {
           <main>
             <Routes>
             <Route path="/" element={<Home />} />
+            <Route path="/category/:slug" element={<CategoryPage />} />
             <Route path="/post-item" element={<PostItem />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
