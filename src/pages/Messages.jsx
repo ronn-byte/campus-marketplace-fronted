@@ -6,6 +6,7 @@ import apiClient, { getApiErrorMessage } from "../services/apiClient";
 import { getInquiryInbox, getInquiryUnreadSummary, updateListingInquiryStatus } from "../services/listingService";
 import { buildWhatsAppUrl, isValidWhatsAppNumber, normalizeWhatsAppNumber } from "../services/whatsapp";
 import { getBuyerContactContextKey, getVisibleBuyerContact, isCurrentBuyerContactRequest } from "../services/buyerContactState.js";
+import { beginInboxRefresh, failInboxRefresh, getSelectedInquiryFilter, shouldSkipInboxLoad } from "../services/inquiryInboxState.js";
 
 const FILTERS = [
   { id: "all", label: "All" },
@@ -31,12 +32,17 @@ export default function Messages() {
   const [summaryError, setSummaryError] = useState("");
   const [statusError, setStatusError] = useState("");
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [buyerContact, setBuyerContact] = useState({ contextKey: null, status: "idle", phoneNumber: null, whatsappNumber: null, error: "" });
   const buyerContactRequestId = useRef(0);
   const buyerContactContextKeyRef = useRef(null);
   const sequence = useRef(0);
+  const loadingMore = useRef(false);
+  const loadedScope = useRef(null);
   const nextCursor = useRef(null);
   const itemById = useMemo(() => new Map(result.items.map((item) => [item.id, item])), [result.items]);
+  const itemByIdRef = useRef(itemById);
+  itemByIdRef.current = itemById;
   const selected = itemById.get(selectedInquiryId);
   const selectedContext = selected?.context;
   const selectedId = selected?.id;
@@ -97,19 +103,33 @@ export default function Messages() {
     };
   }, [buyerContactContextKey, selectedId, selectedParticipantId]);
 
-  const load = useCallback(async ({ append = false } = {}) => {
+  const load = useCallback(async ({ append = false, force = false } = {}) => {
+    if (append && loadingMore.current) return;
+    const scope = JSON.stringify([filter, listingId]);
+    if (!append && shouldSkipInboxLoad({
+      force,
+      selectedInquiryId,
+      selectedIsLoaded: itemByIdRef.current.has(selectedInquiryId),
+      loadedScope: loadedScope.current,
+      scope,
+    })) return;
+    if (append) {
+      loadingMore.current = true;
+      setIsLoadingMore(true);
+    }
     const requestId = ++sequence.current;
-    setResult((current) => ({ ...current, status: "loading" }));
+    if (!append) setResult((current) => beginInboxRefresh(current));
     setError("");
     try {
       if (!append) nextCursor.current = null;
       const page = await getInquiryInbox({ filter, listingId: listingId || undefined, pageSize: 20, cursor: append ? nextCursor.current || undefined : undefined });
       if (sequence.current !== requestId) return;
       nextCursor.current = page.page.nextCursor;
+      loadedScope.current = scope;
       let pageItems = page.items;
       if (!append && selectedInquiryId && !pageItems.some((item) => item.id === selectedInquiryId)) {
         const selectedPage = await getInquiryInbox({
-          filter,
+          filter: getSelectedInquiryFilter(filter),
           listingId: listingId || undefined,
           inquiryId: selectedInquiryId,
           pageSize: 1,
@@ -120,8 +140,13 @@ export default function Messages() {
       setResult((current) => ({ status: "success", items: append ? [...current.items, ...pageItems] : pageItems, page: page.page }));
     } catch (requestError) {
       if (sequence.current !== requestId) return;
-      setResult((current) => ({ ...current, status: "error" }));
+      setResult((current) => failInboxRefresh(current));
       setError(getApiErrorMessage(requestError));
+    } finally {
+      if (append) {
+        loadingMore.current = false;
+        setIsLoadingMore(false);
+      }
     }
   }, [filter, listingId, selectedInquiryId]);
 
@@ -163,7 +188,7 @@ export default function Messages() {
           ? { ...item, inquiryStatus: inquiry?.status ?? status }
           : item),
       }));
-      void load();
+      void load({ force: true });
     } catch (requestError) {
       setStatusError(getApiErrorMessage(requestError));
     } finally {
@@ -185,7 +210,7 @@ export default function Messages() {
     {listingId && <p className="muted">Showing conversations for the selected listing.</p>}
     {error && <p className="form-alert" role="alert">{error}</p>}
     {result.status === "loading" && <p className="muted" role="status">Loading conversations…</p>}
-    {result.status === "error" && <button className="button button--secondary" type="button" onClick={() => void load()}>Try again</button>}
+    {(result.status === "error" || error) && <button className="button button--secondary" type="button" onClick={() => void load({ force: true })}>Try again</button>}
     {result.status === "success" && items.length === 0 && <section className="workspace-state"><h2>{filter === "unread" ? "No unread conversations" : "No conversations yet"}</h2><p className="muted">Conversations you start or receive will appear here.</p>{listingId && <button className="button button--secondary" type="button" onClick={() => { const next = new URLSearchParams(searchParams); next.delete("listingId"); setSearchParams(next); }}>Show all conversations</button>}</section>}
     {result.status === "success" && items.length > 0 && <div className="message-inbox-layout">
       <section className="message-thread-list" aria-label="Conversations">{items.map((item) => <button key={item.id} type="button" onClick={() => selectInquiry(item.id)} className={`message-thread-card${item.id === selectedInquiryId ? " message-thread-card--selected" : ""}${item.hasUnreadMessages ? " message-thread-card--unread" : ""}`} aria-current={item.id === selectedInquiryId ? "true" : undefined}>
@@ -197,7 +222,7 @@ export default function Messages() {
         {item.unreadMessageCount > 0 && <span className="message-thread-card__unread" aria-label={`${item.unreadMessageCount} unread messages`} title={`${item.unreadMessageCount} unread messages`} />}
         {item.unreadMessageCount > 0 && <span className="workspace-unread-badge">{item.unreadMessageCount} unread</span>}
       </button>)}
-      {result.page?.hasMore && <button className="button button--secondary" type="button" disabled={result.status === "loading"} onClick={() => void load({ append: true })}>Load more conversations</button>}</section>
+      {result.page?.hasMore && <button className="button button--secondary" type="button" disabled={isLoadingMore} onClick={() => void load({ append: true })}>Load more conversations</button>}</section>
       <section className="message-thread-detail" aria-label="Selected conversation">{selected ? <>
         <header className="message-thread-detail__header"><div><p className="eyebrow">{selected.context === "BUYING" ? "Buying" : "Selling"} · {selected.otherParticipant?.displayName || "Campus Marketplace participant"}</p><h2>{selected.listing?.title || "Listing unavailable"}</h2></div><div className="workspace-actions">{selected.context === "SELLING" && selected.otherParticipant?.id && <Link className="text-link" to={`/sellers/${encodeURIComponent(selected.otherParticipant.id)}?inquiryId=${encodeURIComponent(selected.id)}`}>View buyer profile</Link>}{selected.listing?.id && <Link className="text-link" to={`/listing/${encodeURIComponent(selected.listing.id)}`}>View listing</Link>}</div></header>
         {selected.context === "SELLING" && selected.inquiryStatus !== "CLOSED" && <div className="workspace-actions" aria-label="Inquiry status actions">
@@ -221,7 +246,7 @@ export default function Messages() {
               : <p className="muted">The buyer has not added contact details.</p>;
           })()}
         </section>}
-        <InquiryConversation key={selected.id} listingId={selected.listing.id} inquiryId={selected.id} onThreadUpdated={() => { void Promise.all([load(), loadSummary()]); }} />
+        <InquiryConversation key={selected.id} listingId={selected.listing.id} inquiryId={selected.id} onThreadUpdated={() => { void Promise.all([load({ force: true }), loadSummary()]); }} />
       </> : <div className="message-thread-placeholder"><h2>Select a conversation</h2><p className="muted">Choose a conversation to read and reply.</p></div>}</section>
     </div>}
   </div>;
