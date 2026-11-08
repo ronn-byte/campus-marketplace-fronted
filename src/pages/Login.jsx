@@ -48,7 +48,7 @@ export default function Login() {
         <p className="muted">Sign in to keep up with listings, conversations, and the people trading around MUT.</p>
       </section>
       <section className="form-card" aria-labelledby="login-heading">
-        <h2 id="login-heading">Log in to MUT Market</h2>
+        <h2 id="login-heading">Log in to Campus Marketplace</h2>
         <p className="form-card__intro">Use your account details to continue.</p>
         {status.error && <div className="form-alert" role="alert">{status.error}</div>}
         <form onSubmit={handleSubmit}>
@@ -63,7 +63,7 @@ export default function Login() {
           <div className="section-heading"><span /> <Link className="text-link" to="/forgot-password">Forgot password?</Link></div>
           <Button type="submit" disabled={status.loading}>{status.loading ? <><InlineSpinner label="Signing in…" announce={false} /> Signing in…</> : "Log in"}</Button>
         </form>
-        <p className="form-footer">New to MUT Market? <Link className="text-link" to="/register">Create an account</Link></p>
+        <p className="form-footer">New to Campus Marketplace? <Link className="text-link" to="/register">Create an account</Link></p>
       </section>
     </div>
   );

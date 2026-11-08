@@ -56,7 +56,7 @@ export default function SellerProfile() {
       <Link className="text-link" to={backPath}>← Back to listing</Link>
       <section className="profile-card seller-profile__card">
         {profile.avatarUrl && <img className="seller-profile__avatar" src={profile.avatarUrl} alt="" />}
-        <p className="eyebrow">MUT Market member</p>
+        <p className="eyebrow">Campus Marketplace member</p>
         <h1>{profile.name}</h1>
         {profile.description && <p className="seller-profile__description">{profile.description}</p>}
         <div className="seller-profile__contacts">

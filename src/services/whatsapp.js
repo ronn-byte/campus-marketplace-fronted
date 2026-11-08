@@ -29,7 +29,7 @@ export const buildWhatsAppUrl = ({ phoneNumber, listing, origin }) => {
   const phone = normalizeWhatsAppNumber(phoneNumber);
   if (!isValidWhatsAppNumber(phone)) return null;
 
-  let message = "Hello! I'm interested in one of your listings on MUT Market.\n\nCould you please let me know what is currently available?";
+  let message = "Hello! I'm interested in one of your listings on Campus Marketplace.\n\nCould you please let me know what is currently available?";
   if (
     isValidListingId(listing?.id)
     && typeof listing.title === "string"
@@ -39,7 +39,7 @@ export const buildWhatsAppUrl = ({ phoneNumber, listing, origin }) => {
       `/listing/${encodeURIComponent(listing.id)}`,
       origin || window.location.origin,
     ).toString();
-    message = `Hello! I found your "${listing.title}" listing on MUT Market and I'm interested in it.\n\nCould you please confirm whether it is still available?\n\nItem link: ${listingUrl}`;
+    message = `Hello! I found your "${listing.title}" listing on Campus Marketplace and I'm interested in it.\n\nCould you please confirm whether it is still available?\n\nItem link: ${listingUrl}`;
   }
 
   return `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;

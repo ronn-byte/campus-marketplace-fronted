@@ -43,7 +43,7 @@ export function classifyApiError(error, context = "request") {
       return {
         kind: "network",
         title: "Connection problem",
-        message: "We couldn't reach MUT Market. Check your connection and try again. Your form details are still here.",
+        message: "We couldn't reach Campus Marketplace. Check your connection and try again. Your form details are still here.",
         actionLabel: "Try again",
       };
     }

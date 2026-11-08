@@ -64,7 +64,7 @@ export default function VerifyEmail() {
         {status === "verifying" && (
           <>
             <h1 id="email-verification-heading">Verifying your email</h1>
-            <p className="muted" role="status">Please wait while we verify your MUT Market account.</p>
+            <p className="muted" role="status">Please wait while we verify your Campus Marketplace account.</p>
             <InlineSpinner label="Verifying your email…" announce={false} />
           </>
         )}

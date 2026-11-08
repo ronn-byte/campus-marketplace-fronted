@@ -57,9 +57,8 @@ export default function Navbar() {
   return (
     <nav className="site-nav" aria-label="Main navigation">
       <div className="site-nav__inner">
-        <Link to="/" className="brand" aria-label="MUT Market home">
-          <img className="brand__logo" src="/assets/mut-official-logo.png" alt="Murang’a University of Technology" />
-          <span className="brand__market">Market</span>
+        <Link to="/" className="brand" aria-label="Campus Marketplace home">
+          <img className="brand__logo" src="/branding/campus-marketplace-wordmark.png" alt="Campus Marketplace" />
         </Link>
         <div className="site-nav__links">
           <NavLink to="/" end className={({ isActive }) => isActive ? "nav-link nav-link--active" : "nav-link"}>Explore</NavLink>
@@ -84,7 +83,7 @@ export default function Navbar() {
         <div className="site-nav__actions">
           {!isAuthenticated && <>
             <Link to="/login" className="nav-link">Log in</Link>
-            <Link to="/register" className="button button--small">Join MUT Market</Link>
+            <Link to="/register" className="button button--small">Join</Link>
           </>}
 
           {isAuthenticated && (

@@ -83,7 +83,7 @@ export default function MyInquiries() {
               {listing?.imageUrl ? <img className="workspace-buyer-inquiry__image" src={listing.imageUrl} alt={listing.title || "Listing"} /> : <div className="workspace-buyer-inquiry__image workspace-listing__image--empty">No image</div>}
               <div className="workspace-buyer-inquiry__content">
                 <div className="workspace-listing__heading"><div><p className="eyebrow">{listing?.category || "Marketplace listing"}{listing?.status ? ` · ${listing.status.toLowerCase()}` : ""}</p><h2>{listing?.title || "Listing details unavailable"}</h2></div><span className="workspace-status">{inquiry.status?.toLowerCase() || "open"}</span></div>
-                <p className="muted">Seller: {inquiry.seller?.name || "MUT Market seller"}</p>
+                <p className="muted">Seller: {inquiry.seller?.name || "Campus Marketplace seller"}</p>
                 {inquiry.seller?.id && <Link className="text-link" to={`/sellers/${encodeURIComponent(inquiry.seller.id)}`}>View seller profile</Link>}
                 <p className="muted">Started {formatDate(inquiry.createdAt)} · Latest activity {formatDate(inquiry.latestMessageAt || inquiry.updatedAt)}</p>
                 <p className={inquiry.sellerHasReplied ? "inquiry-reply-status inquiry-reply-status--replied" : "inquiry-reply-status"}>{inquiry.sellerHasReplied ? "Seller has replied" : "Waiting for seller reply"}</p>

@@ -41,7 +41,7 @@ export default function Register() {
   return (
     <div className="page-shell form-page">
       <section className="form-intro">
-        <p className="eyebrow">Made for MUT</p>
+        <p className="eyebrow">Campus Marketplace</p>
         <h1>Good finds, close by.</h1>
         <p className="muted">Create an account to discover useful things, sell what you no longer need, and trade with your community.</p>
       </section>

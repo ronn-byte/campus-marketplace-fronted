@@ -53,6 +53,7 @@ test("builds an encoded listing inquiry with the canonical public URL", () => {
   }));
 
   assert.equal(url.pathname, "/254712345678");
+  assert.match(url.searchParams.get("text"), /Campus Marketplace/);
   assert.match(url.searchParams.get("text"), /C\+\+ notes & résumé — 2026/);
   assert.match(url.searchParams.get("text"), /https:\/\/mutmarket\.up\.railway\.app\/listing\/8f3fbaa4-ee54-411f-a748-d0aba806554a/);
   assert.match(url.searchParams.get("text"), /confirm whether it is still available/);
@@ -62,6 +63,7 @@ test("uses the existing digits-only contact formatting and a general inquiry wit
   const url = new URL(buildWhatsAppUrl({ phoneNumber: "(0712) 345 678", origin: "https://mutmarket.example" }));
 
   assert.equal(url.pathname, "/0712345678");
+  assert.match(url.searchParams.get("text"), /Campus Marketplace/);
   assert.match(url.searchParams.get("text"), /one of your listings/);
   assert.doesNotMatch(url.searchParams.get("text"), /Item link:/);
   assert.equal(buildWhatsAppUrl({ phoneNumber: "071234", listing: { id: listingId, title: "Unavailable" }, origin: "https://mutmarket.example" }), null);

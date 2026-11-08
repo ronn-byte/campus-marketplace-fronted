@@ -237,7 +237,7 @@ function Home() {
         <div className="home-explore-hero__overlay">
           <div className="home-explore-hero__inner">
             <p className="home-explore-hero__eyebrow">Murang&apos;a University of Technology</p>
-            <h1 id="explore-welcome-heading">Welcome to MUT Market</h1>
+            <h1 id="explore-welcome-heading">Welcome to Campus Marketplace</h1>
             <p>Find useful things, share what you no longer need, and trade with your university community.</p>
             <div className="home-explore-hero__actions">
               <a className="button home-explore-hero__primary" href="#recent-listings">Browse recent listings</a>
