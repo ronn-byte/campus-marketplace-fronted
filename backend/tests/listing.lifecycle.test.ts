@@ -48,7 +48,12 @@ async function createActor(options: ActorOptions = {}) {
       emailVerifiedAt: options.emailVerified === false ? null : new Date(),
       ...(options.profileComplete === false
         ? {}
-        : { profile: { create: { nickname: "Lifecycle Seller", course: "Computer Science" } } }),
+        : { profile: { create: {
+          nickname: "Lifecycle Seller",
+          course: "Computer Science",
+          sellerPublicPhoneNumber: "+254711111111",
+          sellerPublicWhatsappNumber: "+254722222222",
+        } } }),
       studentProfile: {
         create: {
           displayName: "Lifecycle Test Student",
@@ -304,7 +309,13 @@ test("publishing requires a completed seller profile and does not require studen
   assert.equal(incompletePublish.json().error.code, "SELLER_PROFILE_INCOMPLETE");
 
   await prisma.profile.create({
-    data: { userId: seller.user.id, nickname: "Lifecycle Seller", course: "Computer Science" },
+    data: {
+      userId: seller.user.id,
+      nickname: "Lifecycle Seller",
+      course: "Computer Science",
+      sellerPublicPhoneNumber: "+254711111111",
+      sellerPublicWhatsappNumber: "+254722222222",
+    },
   });
   const published = await app.inject({
     method: "POST",
