@@ -14,6 +14,8 @@ import { registerAuthRoutes } from "../modules/auth/auth.routes.js";
 import { registerProfileRoutes } from "../modules/profile/profile.routes.js";
 import { registerVerificationRoutes } from "../modules/verification/verification.routes.js";
 import {
+  getListingImageFile,
+  getUploadRootPath,
   MAX_LISTING_IMAGE_BYTES,
   MAX_LISTING_IMAGES_PER_LISTING,
 } from "../lib/storage.js";
@@ -23,13 +25,14 @@ const __dirname = path.dirname(__filename);
 
 const backendRootPath = path.resolve(__dirname, "../..");
 const frontendDistPath = path.resolve(backendRootPath, "../dist");
-const uploadRoot = path.resolve(process.cwd(), env.UPLOAD_ROOT);
+const uploadRoot = getUploadRootPath();
 fs.mkdirSync(uploadRoot, { recursive: true });
 
-export function buildApp(): FastifyInstance {
-  const hasFrontendBuild = fs.existsSync(path.join(frontendDistPath, "index.html"));
+export function buildApp(options: { frontendDistPath?: string } = {}): FastifyInstance {
+  const frontendRoot = options.frontendDistPath ?? frontendDistPath;
+  const hasFrontendBuild = fs.existsSync(path.join(frontendRoot, "index.html"));
   if (env.NODE_ENV === "production" && !hasFrontendBuild) {
-    throw new Error(`Frontend build not found at ${frontendDistPath}. Run the root production build first.`);
+    throw new Error(`Frontend build not found at ${frontendRoot}. Run the root production build first.`);
   }
 
   const app = Fastify({
@@ -38,18 +41,29 @@ export function buildApp(): FastifyInstance {
     requestIdHeader: "x-request-id",
   });
 
+  app.get<{ Params: { "*": string } }>("/uploads/*", async (request, reply) => {
+    const image = await getListingImageFile(request.params["*"]);
+    if (!image) {
+      return reply.status(404).send({
+        error: {
+          code: "NOT_FOUND",
+          message: "Image not found.",
+        },
+      });
+    }
+
+    return reply
+      .type(image.mimeType)
+      .header("X-Content-Type-Options", "nosniff")
+      .send(fs.createReadStream(image.filePath));
+  });
+
   if (hasFrontendBuild) {
     app.register(fastifyStatic, {
-      root: frontendDistPath,
+      root: frontendRoot,
       prefix: "/",
     });
   }
-
-  app.register(fastifyStatic, {
-    root: uploadRoot,
-    prefix: "/uploads/",
-    decorateReply: false,
-  });
 
   app.register(helmet);
   app.register(cookie);
@@ -94,6 +108,15 @@ export function buildApp(): FastifyInstance {
 
   app.setNotFoundHandler(async (request, reply) => {
     const requestPath = request.url.split("?")[0] ?? request.url;
+    if (requestPath === "/uploads" || requestPath.startsWith("/uploads/")) {
+      return reply.status(404).send({
+        error: {
+          code: "NOT_FOUND",
+          message: "Image not found.",
+        },
+      });
+    }
+
     if (requestPath === "/api" || requestPath.startsWith("/api/")) {
       return reply.status(404).send({
         error: {
