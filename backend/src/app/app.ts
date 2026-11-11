@@ -65,7 +65,13 @@ export function buildApp(options: { frontendDistPath?: string } = {}): FastifyIn
     });
   }
 
-  app.register(helmet);
+  app.register(helmet, {
+    contentSecurityPolicy: {
+      directives: {
+        imgSrc: ["'self'", "data:", "https://uniloop.co.ke"],
+      },
+    },
+  });
   app.register(cookie);
   app.register(multipart, {
     limits: {

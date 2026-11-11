@@ -118,6 +118,30 @@ test("a missing image returns a real 404 instead of the frontend app", async () 
   assert.doesNotMatch(response.body, /<!doctype html/i);
 });
 
+test("Content Security Policy allows production listing images and preserves other directives", async () => {
+  await app.ready();
+  const response = await app.inject({ method: "GET", url: "/health" });
+  const directives = Object.fromEntries(
+    (response.headers["content-security-policy"] ?? "")
+      .split(";")
+      .map((directive) => directive.trim().split(/\s+/))
+      .filter(([name]) => name)
+      .map(([name, ...sources]) => [name, sources]),
+  );
+
+  assert.deepEqual(directives["img-src"], ["'self'", "data:", "https://uniloop.co.ke"]);
+  assert.deepEqual(directives["default-src"], ["'self'"]);
+  assert.deepEqual(directives["base-uri"], ["'self'"]);
+  assert.deepEqual(directives["font-src"], ["'self'", "https:", "data:"]);
+  assert.deepEqual(directives["form-action"], ["'self'"]);
+  assert.deepEqual(directives["frame-ancestors"], ["'self'"]);
+  assert.deepEqual(directives["object-src"], ["'none'"]);
+  assert.deepEqual(directives["script-src"], ["'self'"]);
+  assert.deepEqual(directives["script-src-attr"], ["'none'"]);
+  assert.deepEqual(directives["style-src"], ["'self'", "https:", "'unsafe-inline'"]);
+  assert.deepEqual(directives["upgrade-insecure-requests"], []);
+});
+
 test("frontend routes keep serving the application and missing API routes stay JSON", async () => {
   const frontendResponse = await app.inject({ method: "GET", url: "/messages" });
   assert.equal(frontendResponse.statusCode, 200);
