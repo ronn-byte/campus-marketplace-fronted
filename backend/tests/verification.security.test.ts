@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test, { after, before } from "node:test";
 import {
   AccountStatus,
+  ListingCondition,
   ListingStatus,
   Role,
   VerificationMethod,
@@ -112,7 +113,7 @@ function createListingPayload() {
     title: "Test listing",
     description: "A listing used to test the seller authorization boundary.",
     price: 10,
-    condition: "GOOD",
+    condition: ListingCondition.GOOD,
     location: "Campus",
   };
 }
@@ -574,7 +575,7 @@ test("post-commit image readback failure preserves committed file and row", asyn
   const delegate = prisma.listingImage as unknown as { findMany: typeof prisma.listingImage.findMany };
   const originalFindMany = delegate.findMany;
   try {
-    delegate.findMany = async () => { throw new Error("simulated post-commit readback failure"); };
+    delegate.findMany = () => { throw new Error("simulated post-commit readback failure"); };
     await assert.rejects(() => addListingImages(listing.id, seller.user.id, [{ mimetype: "image/png", buffer }], randomUUID()), /simulated post-commit readback failure/);
   } finally {
     delegate.findMany = originalFindMany;
@@ -1184,7 +1185,7 @@ test("client-supplied seller or verification claims cannot bypass authorization"
   assert.equal(publish.json().error.code, "SELLER_EMAIL_UNVERIFIED");
 });
 
-test("manual verification reviews require moderator/admin authorization and forbid self-review", async (t) => {
+test("manual verification reviews require moderator/admin authorization and forbid self-review", async () => {
   const student = await createActor({ verificationStatus: VerificationStatus.PENDING });
   const studentReview = await app.inject({
     method: "POST",
